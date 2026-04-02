@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>AI Form Filler</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            width: 320px;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #0f0f17;
+            color: #e0e0f0;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #1a1a2e, #16213e);
+            padding: 16px 20px;
+            border-bottom: 1px solid #2a2a4a;
+        }
+        .header h3 { font-size: 16px; font-weight: 700; color: #a78bfa; }
+        .header p { font-size: 11px; color: #888; margin-top: 2px; }
+
+        .section {
+            padding: 14px 18px;
+            border-bottom: 1px solid #1e1e35;
+        }
+
+        /* Document Upload Card */
+        .upload-zone {
+            border: 2px dashed #3a3a6a;
+            border-radius: 8px;
+            padding: 14px;
+            text-align: center;
+            cursor: pointer;
+            transition: border-color 0.2s, background 0.2s;
+        }
+        .upload-zone:hover { border-color: #7c3aed; background: #1a1030; }
+        .upload-zone input { display: none; }
+        .upload-zone label { cursor: pointer; display: block; }
+        .upload-icon { font-size: 26px; line-height: 1; margin-bottom: 6px; }
+        .upload-hint { font-size: 11px; color: #888; }
+        .upload-cta { font-size: 13px; font-weight: 600; color: #a78bfa; }
+
+        .doc-badge {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            background: #1a1035;
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-top: 8px;
+            font-size: 12px;
+            border: 1px solid #3a2e6a;
+        }
+        .doc-badge.visible { display: flex; }
+        .doc-badge .icon { font-size: 16px; }
+        .doc-badge .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #c4b5fd; }
+        .doc-badge .chunks { color: #666; font-size: 10px; }
+
+        /* Buttons */
+        .btn {
+            width: 100%;
+            border: none;
+            padding: 11px;
+            border-radius: 7px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin-top: 8px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #7c3aed, #4f46e5);
+            color: white;
+        }
+        .btn-primary:hover { filter: brightness(1.15); }
+        .btn-primary:disabled { filter: brightness(0.5); cursor: not-allowed; }
+        .btn-danger {
+            background: transparent;
+            border: 1px solid #4a1a1a;
+            color: #f87171;
+            font-size: 12px;
+            padding: 7px;
+            margin-top: 6px;
+        }
+        .btn-danger:hover { background: #2a0f0f; border-color: #f87171; }
+
+        /* Status Message */
+        #status {
+            padding: 10px 18px 14px;
+            font-size: 12px;
+            font-weight: 600;
+            min-height: 36px;
+            text-align: center;
+        }
+        .success { color: #34d399; }
+        .error { color: #f87171; }
+        .loading { color: #60a5fa; }
+        .info { color: #a78bfa; }
+
+        /* Upload progress */
+        #uploadStatus { font-size: 11px; color: #888; text-align: center; margin-top: 6px; min-height: 16px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h3>🤖 AI Form Filler</h3>
+        <p>Powered by Gemini · Auto fills any form</p>
+    </div>
+
+    <!-- Document Upload Section -->
+    <div class="section">
+        <div class="upload-zone" id="uploadZone">
+            <label for="docFileInput">
+                <div class="upload-icon">📄</div>
+                <div class="upload-cta">Upload Resume / Document</div>
+                <div class="upload-hint">PDF or DOCX · Used as context for form filling</div>
+            </label>
+            <input type="file" id="docFileInput" accept=".pdf,.docx">
+        </div>
+
+        <div class="doc-badge" id="docBadge">
+            <span class="icon">✅</span>
+            <span class="name" id="docName">document.pdf</span>
+            <span class="chunks" id="docChunks">0 chunks</span>
+        </div>
+        <div id="uploadStatus"></div>
+    </div>
+
+    <!-- Autofill Section -->
+    <div class="section">
+        <button class="btn btn-primary" id="autofillBtn">🪄 Autofill Form</button>
+        <button class="btn btn-danger" id="clearBtn">🗑 Clear Cache &amp; Document</button>
+    </div>
+
+    <div id="status"></div>
+
+    <script src="popup.js"></script>
+</body>
+</html>
