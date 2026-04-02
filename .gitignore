@@ -2,3 +2,5 @@
 #python cache
 __pycache__
 /.tracing.log
+tracing.log
+err.txt

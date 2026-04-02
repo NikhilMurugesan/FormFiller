@@ -15,7 +15,9 @@ from .document_store import retrieve_chunks
 load_dotenv()
 
 _client = genai.Client()
-EMBEDDING_MODEL = "models/text-embedding-004"
+# text-embedding-004 is throwing 404 NOT_FOUND for this SDK version/API key config.
+# gemini-embedding-001 is stable and supports batch content embedding.
+EMBEDDING_MODEL = "gemini-embedding-001"
 
 
 async def embed_texts(texts: List[str]) -> List[List[float]]:
