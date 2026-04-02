@@ -76,6 +76,8 @@ async def upload_document(
     3. Embed ALL chunks via Gemini Embeddings (done ONCE and cached)
     4. Return metadata (filename + chunk count) — NOT the chunks themselves
     """
+    print(f"\n[API HIT] POST /upload-document | File: {file.filename}", flush=True)
+
     filename = file.filename or "document"
     content = await file.read()
 
@@ -114,6 +116,8 @@ async def analyze_fields_endpoint(request: AnalyzeRequest):
     2. Retrieve ONLY the top-K relevant chunks using RAG (cosine similarity)
     3. Pass those chunks to Gemini for mapping — minimal tokens used
     """
+    print(f"\n[API HIT] POST /analyze-fields | Fields received: {len(request.fields)}", flush=True)
+
     session_id = request.session_id or "default"
 
     # RAG: retrieve only relevant chunks — no chunks sent if no doc uploaded

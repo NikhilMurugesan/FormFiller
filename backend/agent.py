@@ -83,6 +83,7 @@ async def analyze_form_fields(fields: List[FormField], document_chunks: List[str
 
     for attempt in range(MAX_RETRIES + 1):
         try:
+            print(f"\n[API HIT] Calling Gemini LLM (generate_content) | Model: {model_name} | Attempt: {attempt + 1}", flush=True)
             response = await client.aio.models.generate_content(
                 model=model_name,
                 contents=user_message,
