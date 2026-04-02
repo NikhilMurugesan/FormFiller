@@ -1,3 +1,4 @@
 /.env
 #python cache
 __pycache__
+/.tracing.log
