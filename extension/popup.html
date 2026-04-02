@@ -3,132 +3,164 @@
 <head>
     <meta charset="UTF-8">
     <title>AI Form Filler</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
             width: 320px;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: #0f0f17;
-            color: #e0e0f0;
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(145deg, #0f0c29, #302b63, #24243e);
+            color: #f1f1f1;
+            overflow-x: hidden;
         }
 
         .header {
-            background: linear-gradient(135deg, #1a1a2e, #16213e);
-            padding: 16px 20px;
-            border-bottom: 1px solid #2a2a4a;
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            padding: 20px;
+            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
+            text-align: center;
         }
-        .header h3 { font-size: 16px; font-weight: 700; color: #a78bfa; }
-        .header p { font-size: 11px; color: #888; margin-top: 2px; }
+        .header h3 { font-size: 18px; font-weight: 700; background: linear-gradient(90deg, #a78bfa, #f472b6); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .header p { font-size: 11px; color: #cbd5e1; margin-top: 4px; font-weight: 300; letter-spacing: 0.5px; }
 
         .section {
-            padding: 14px 18px;
-            border-bottom: 1px solid #1e1e35;
+            padding: 16px 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         /* Document Upload Card */
         .upload-zone {
-            border: 2px dashed #3a3a6a;
-            border-radius: 8px;
-            padding: 14px;
+            background: rgba(26, 16, 48, 0.6);
+            border: 1px dashed rgba(167, 139, 250, 0.5);
+            border-radius: 12px;
+            padding: 20px 14px;
             text-align: center;
             cursor: pointer;
-            transition: border-color 0.2s, background 0.2s;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: inset 0 0 15px rgba(0,0,0,0.5);
         }
-        .upload-zone:hover { border-color: #7c3aed; background: #1a1030; }
+        .upload-zone:hover { 
+            border-color: #a78bfa; 
+            background: rgba(167, 139, 250, 0.15); 
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(124, 58, 237, 0.3);
+        }
         .upload-zone input { display: none; }
         .upload-zone label { cursor: pointer; display: block; }
-        .upload-icon { font-size: 26px; line-height: 1; margin-bottom: 6px; }
-        .upload-hint { font-size: 11px; color: #888; }
-        .upload-cta { font-size: 13px; font-weight: 600; color: #a78bfa; }
+        .upload-icon { font-size: 32px; line-height: 1; margin-bottom: 8px; filter: drop-shadow(0 0 8px rgba(167,139,250,0.8)); }
+        .upload-hint { font-size: 10px; color: #94a3b8; font-weight: 400; margin-top: 4px; }
+        .upload-cta { font-size: 13px; font-weight: 600; color: #e2e8f0; letter-spacing: 0.3px; }
 
         .doc-badge {
             display: none;
             align-items: center;
-            gap: 8px;
-            background: #1a1035;
-            border-radius: 6px;
-            padding: 8px 10px;
-            margin-top: 8px;
+            gap: 10px;
+            background: rgba(20, 15, 45, 0.8);
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-top: 12px;
             font-size: 12px;
-            border: 1px solid #3a2e6a;
+            border: 1px solid rgba(167, 139, 250, 0.3);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            backdrop-filter: blur(5px);
         }
-        .doc-badge.visible { display: flex; }
-        .doc-badge .icon { font-size: 16px; }
-        .doc-badge .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #c4b5fd; }
-        .doc-badge .chunks { color: #666; font-size: 10px; }
+        .doc-badge.visible { display: flex; animation: slideIn 0.3s ease-out; }
+        .doc-badge .icon { font-size: 16px; text-shadow: 0 0 5px #34d399; }
+        .doc-badge .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #f8fafc; font-weight: 500; }
+        .doc-badge .chunks { color: #94a3b8; font-size: 10px; background: rgba(0,0,0,0.4); padding: 3px 6px; border-radius: 4px; }
+
+        @keyframes slideIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
 
         /* Buttons */
         .btn {
             width: 100%;
             border: none;
-            padding: 11px;
-            border-radius: 7px;
+            padding: 12px;
+            border-radius: 8px;
             font-size: 14px;
             font-weight: 600;
+            font-family: inherit;
             cursor: pointer;
-            transition: all 0.2s;
-            margin-top: 8px;
+            transition: all 0.2s ease-in-out;
+            margin-top: 10px;
+            position: relative;
+            overflow: hidden;
         }
         .btn-primary {
-            background: linear-gradient(135deg, #7c3aed, #4f46e5);
-            color: white;
+            background: linear-gradient(135deg, #7c3aed, #ec4899);
+            color: #ffffff;
+            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.4);
+            text-shadow: 0 1px 2px rgba(0,0,0,0.2);
         }
-        .btn-primary:hover { filter: brightness(1.15); }
-        .btn-primary:disabled { filter: brightness(0.5); cursor: not-allowed; }
+        .btn-primary:hover { 
+            transform: scale(1.02); 
+            box-shadow: 0 6px 20px rgba(236, 72, 153, 0.5); 
+        }
+        .btn-primary:active { transform: scale(0.98); }
+        .btn-primary:disabled { background: #334155; box-shadow: none; cursor: not-allowed; color: #94a3b8; transform: none; }
+        
         .btn-danger {
-            background: transparent;
-            border: 1px solid #4a1a1a;
-            color: #f87171;
+            background: rgba(248, 113, 113, 0.1);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: #fca5a5;
             font-size: 12px;
-            padding: 7px;
-            margin-top: 6px;
+            padding: 8px;
+            margin-top: 8px;
         }
-        .btn-danger:hover { background: #2a0f0f; border-color: #f87171; }
+        .btn-danger:hover { background: rgba(248, 113, 113, 0.2); border-color: #f87171; color: #fff; }
 
-        /* Status Message */
-        #status {
-            padding: 10px 18px 14px;
-            font-size: 12px;
-            font-weight: 600;
-            min-height: 36px;
-            text-align: center;
-        }
-        .success { color: #34d399; }
-        .error { color: #f87171; }
-        .loading { color: #60a5fa; }
-        .info { color: #a78bfa; }
-
-        /* Upload progress */
-        #uploadStatus { font-size: 11px; color: #888; text-align: center; margin-top: 6px; min-height: 16px; }
-
+        /* Data Config Input */
         .config-input {
             width: 100%;
-            height: 60px;
-            background: #1a1030;
-            border: 1px solid #3a3a6a;
-            color: #ccc;
-            padding: 8px;
-            border-radius: 4px;
+            height: 65px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            color: #e2e8f0;
+            padding: 10px;
+            border-radius: 8px;
             font-size: 11px;
             resize: none;
-            font-family: inherit;
+            font-family: monospace;
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
+            transition: all 0.2s;
         }
-        .config-input:focus { outline: none; border-color: #7c3aed; }
+        .config-input:focus { outline: none; border-color: #a78bfa; background: rgba(15, 23, 42, 0.9); box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2); }
+        
+        /* Status Message */
+        #status {
+            padding: 12px 20px 16px;
+            font-size: 12px;
+            font-weight: 500;
+            min-height: 40px;
+            text-align: center;
+            letter-spacing: 0.2px;
+        }
+        .success { color: #6ee7b7; text-shadow: 0 0 8px rgba(110, 231, 183, 0.5); }
+        .error { color: #fca5a5; }
+        .loading { color: #93c5fd; animation: pulse 1.5s infinite; }
+        .info { color: #c4b5fd; }
+        
+        @keyframes pulse { 0% { opacity: 0.7; } 50% { opacity: 1; } 100% { opacity: 0.7; } }
+
+        /* Upload progress */
+        #uploadStatus { font-size: 11px; color: #94a3b8; text-align: center; margin-top: 8px; min-height: 16px; transition: color 0.3s; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h3>🤖 AI Form Filler</h3>
-        <p>Powered by Gemini · Auto fills any form</p>
+        <h3>✨ AI Autofiller Pro</h3>
+        <p>Premium Agentic Form Assistant</p>
     </div>
 
     <!-- Document Upload Section -->
-    <div class="section">
+    <div class="section" style="border-top: 1px solid rgba(255,255,255,0.1);">
         <div class="upload-zone" id="uploadZone">
             <label for="docFileInput">
-                <div class="upload-icon">📄</div>
-                <div class="upload-cta">Upload Resume / Document</div>
-                <div class="upload-hint">PDF or DOCX · Used as context for form filling</div>
+                <div class="upload-icon">🪄</div>
+                <div class="upload-cta">Drop Context Document</div>
+                <div class="upload-hint">Upload PDF / DOCX to inject knowledge</div>
             </label>
             <input type="file" id="docFileInput" accept=".pdf,.docx">
         </div>
@@ -143,15 +175,16 @@
 
     <!-- Data Section -->
     <div class="section">
-        <textarea id="userDataInput" class="config-input" placeholder='Paste JSON profile here... Example: {"fullName": "John", "role": "Developer"}'></textarea>
-        <button class="btn btn-primary" id="saveDataBtn" style="background:#3a2e6a; color:#a78bfa; margin-top:6px; font-size:12px;">💾 Save Data</button>
-        <div id="dataStatus" style="font-size:10px; color:#888; text-align:center; margin-top:4px;"></div>
+        <textarea id="userDataInput" class="config-input" placeholder='Paste structured JSON profile here...
+Example: { "fullName": "John" }'></textarea>
+        <button class="btn btn-primary" id="saveDataBtn" style="background: rgba(167, 139, 250, 0.15); border: 1px solid rgba(167, 139, 250, 0.4); color: #cbd5e1; box-shadow: none;">💾 Sync Custom Profile</button>
+        <div id="dataStatus" style="font-size:11px; color:#94a3b8; text-align:center; margin-top:6px;"></div>
     </div>
 
     <!-- Autofill Section -->
     <div class="section">
-        <button class="btn btn-primary" id="autofillBtn">🪄 Autofill Form</button>
-        <button class="btn btn-danger" id="clearBtn">🗑 Clear Cache &amp; Document</button>
+        <button class="btn btn-primary" id="autofillBtn" style="font-size: 15px; padding: 14px;">🚀 Launch Autofill Agent</button>
+        <button class="btn btn-danger" id="clearBtn">⚠️ Reset Extension State</button>
     </div>
 
     <div id="status"></div>

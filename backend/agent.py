@@ -116,9 +116,9 @@ async def analyze_form_fields(fields: List[FormField], document_chunks: List[str
         except Exception as e:
             last_error = e
             error_str = str(e)
-            if "429" in error_str and attempt < MAX_RETRIES:
-                wait = extract_retry_delay(error_str)
-                _trace(f"Rate limited (attempt {attempt + 1}/{MAX_RETRIES}). Waiting {wait}s before retry...", "WARNING")
+            if ("429" in error_str or "503" in error_str) and attempt < MAX_RETRIES:
+                wait = extract_retry_delay(error_str, default=3)
+                _trace(f"API Rate/Load limit (attempt {attempt + 1}/{MAX_RETRIES}). Waiting {wait}s before retry...", "WARNING")
                 await asyncio.sleep(wait)
             else:
                 break  # non-rate-limit error or retries exhausted
