@@ -75,12 +75,6 @@ async def analyze_form_fields(fields: List[FormField], document_chunks: List[str
     fields_dict = [f.model_dump() for f in fields]
     doc_chunks = document_chunks or []
 
-    # If there are no doc chunks, the RAG retrieval latency was bypassed.
-    # To prevent hitting the GenAI free tier RPM burst limit from the 3 successive
-    # extension passes, we add an artificial backoff here.
-    if not doc_chunks:
-        await asyncio.sleep(2.0)
-
     # Build compact user message — all optimization happens here
     user_message = build_compact_user_message(user_data, fields_dict, doc_chunks)
 

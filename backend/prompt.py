@@ -2,13 +2,15 @@ import json
 
 # STATIC system prompt — never changes, never contains documents or user data.
 # This is cached by Gemini and costs nearly nothing to repeat.
-SYSTEM_PROMPT = """You are a form-filling agent. You receive a compact user profile and a list of HTML form fields. 
-Map each field to the best matching value. If no exact match exists, generate a plausible professional answer from context.
-For sensitive fields (SSN, credit card, passwords) return null.
-For select/dropdown fields, return the option value that best fits the user's profile.
+SYSTEM_PROMPT = """You are a form-filling AI minimizing token usage. 
+Map fields to the best profile value. 
+Rules:
+1. Provide extremely concise, single-sentence answers. DO NOT write paragraphs.
+2. For sensitive fields (SSN, credit card, passwords) return null.
+3. For select/dropdowns, return the exact option value.
 
-Respond ONLY with this JSON — no markdown, no explanation:
-{"mappings":[{"field_id":"<id>","value":"<value or null>"}]}`"""
+Respond EXCLUSIVELY with this JSON:
+{"mappings":[{"field_id":"<id>","value":"<short value or null>"}]}"""
 
 
 def build_compact_user_message(user_data: dict, fields: list, doc_chunks: list) -> str:
@@ -22,12 +24,19 @@ def build_compact_user_message(user_data: dict, fields: list, doc_chunks: list) 
        only part of the USER turn — no repeated overhead
     4. Field metadata stripped down (remove null keys)
     """
-    # 1. Strip empty values
-    clean_profile = {k: v for k, v in user_data.items() if v not in (None, "", [], {})}
-
-    # 2. Compress skills if it's a list
-    if isinstance(clean_profile.get("skills"), list):
-        clean_profile["skills"] = ", ".join(clean_profile["skills"])
+    # 1. Strip empty values & aggressively format lengths to prevent token exhaustion
+    clean_profile = {}
+    for k, v in user_data.items():
+        if v in (None, "", [], {}):
+            continue
+        if isinstance(v, list):
+            # Cap array items to prevent token-heavy massive skill lists
+            clean_profile[k] = ", ".join([str(i) for i in v[:15]])
+        elif isinstance(v, str):
+            # Cap string properties to ~150 chars max
+            clean_profile[k] = v[:150]
+        else:
+            clean_profile[k] = v
 
     # 3. Compress fields — remove keys whose value is None
     compact_fields = []

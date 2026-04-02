@@ -33,6 +33,12 @@ async function runAutofillSequence() {
     while (passCount < MAX_PASSES) {
         passCount++;
 
+        // Add 2.0s delay between passes to prevent triggering Google's API burst limit,
+        // done on the client side so Vercel Serverless doesn't time out waiting.
+        if (passCount > 1) {
+            await new Promise(r => setTimeout(r, 2000));
+        }
+
         let fieldsInfo = extractFields(touchedFieldIds);
         if (fieldsInfo.length === 0) {
             console.log(`Pass ${passCount}: No new fields. Done.`);
