@@ -49,9 +49,15 @@ def build_compact_user_message(user_data: dict, fields: list, doc_chunks: list) 
         "profile": clean_profile,
         "fields": compact_fields
     }
+    
     if doc_chunks:
         # Trim each chunk and cap total doc context characters to keep tokens low
         trimmed = [c[:400] for c in doc_chunks[:3]]
         parts["resume_context"] = " | ".join(trimmed)
+    else:
+        # Provide fallback natural language to stabilize Gemini preview models.
+        # Preview models frequently throw 503 UNAVAILABLE if the input contains ONLY
+        # dense JSON dictionaries without human-readable conversational context.
+        parts["resume_context"] = "No additional resume document provided. Please rely exclusively on the profile data above."
 
     return json.dumps(parts, separators=(',', ':'))  # compact JSON = fewer tokens
