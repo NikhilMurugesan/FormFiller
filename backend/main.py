@@ -46,6 +46,7 @@ app.add_middleware(
 class AnalyzeRequest(BaseModel):
     fields: List[FormField]
     session_id: Optional[str] = "default"
+    user_data: Optional[dict] = None
 
 
 @app.get("/")
@@ -127,7 +128,7 @@ async def analyze_fields_endpoint(request: AnalyzeRequest):
         relevant_chunks = await retrieve_relevant_chunks(session_id, fields_as_dicts)
         print(f"[RAG] Using {len(relevant_chunks)} chunk(s) for this request.")
 
-    response = await analyze_form_fields(request.fields, relevant_chunks)
+    response = await analyze_form_fields(request.fields, relevant_chunks, request.user_data)
     return response
 
 

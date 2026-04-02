@@ -1,9 +1,17 @@
-const API_BASE = "http://127.0.0.1:8000";
+// const API_BASE = "http://127.0.0.1:8000";
+const API_BASE = "https://form-filler-pi.vercel.app";
 const SESSION_ID = "formfiller_session";
 const STORAGE_KEY = "ff_doc_meta"; // Only storing metadata now, NOT raw chunks
 
-// --- On Load: Restore cached document metadata ---
+// --- On Load: Restore cached document metadata AND user data ---
 document.addEventListener("DOMContentLoaded", async () => {
+  // Check browser-cached user data
+  chrome.storage.local.get("ff_user_data", (res) => {
+      if (res.ff_user_data) {
+          document.getElementById("userDataInput").value = JSON.stringify(res.ff_user_data, null, 2);
+      }
+  });
+
   // Check browser-cached metadata
   const meta = await getCachedMeta();
   if (meta) {
@@ -71,6 +79,33 @@ document
       setUploadStatus(`❌ ${err.message}`, "error");
     }
   });
+
+// --- Save Config Handler ---
+document.getElementById("saveDataBtn").addEventListener("click", () => {
+  const status = document.getElementById("dataStatus");
+  const val = document.getElementById("userDataInput").value.trim();
+
+  if (!val) {
+    chrome.storage.local.remove("ff_user_data", () => {
+      status.textContent = "Data cleared!";
+      status.style.color = "#a78bfa";
+      setTimeout(() => (status.textContent = ""), 2000);
+    });
+    return;
+  }
+
+  try {
+    const parsed = JSON.parse(val);
+    chrome.storage.local.set({ ff_user_data: parsed }, () => {
+      status.textContent = "✅ Saved to Cache!";
+      status.style.color = "#34d399";
+      setTimeout(() => (status.textContent = ""), 2000);
+    });
+  } catch (e) {
+    status.textContent = "❌ Invalid JSON syntax!";
+    status.style.color = "#f87171";
+  }
+});
 
 // --- Autofill Button ---
 document.getElementById("autofillBtn").addEventListener("click", async () => {
