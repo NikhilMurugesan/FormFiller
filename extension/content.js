@@ -477,6 +477,54 @@ if (typeof window._ffProInitialized === 'undefined') {
             break;
           }
 
+          case 'CLEAR_SINGLE': {
+            const r = InjectionEngine.inject(request.fieldId, '', { force: true });
+            if (r.success) _filledFieldIds.delete(request.fieldId);
+            sendResponse({ status: r.success ? 'success' : 'error', reason: r.reason });
+            break;
+          }
+
+          case 'APPLY_MAPPINGS': {
+            // Apply a pre-computed array of mappings (Static + AI)
+            let filledCount = 0;
+            const filledArr = [];
+            const skippedArr = [];
+
+            const safeFields = await FieldDetector.scanWithRetry(_filledFieldIds);
+            const safeDOMFields = SafetyFilter.filterFields(safeFields).safe;
+
+            for (const m of request.mappings) {
+               if (m.status === 'matched' && m.value !== null && m.value !== undefined) {
+                  const targetDOM = safeDOMFields.find(f => f.id === m.fieldId);
+                  if (targetDOM) {
+                     // Checkbox / Dropdown logic bypassing via DecisionEngine could be complex here.
+                     // For now, InjectionEngine handles basic radio/checkbox/select/text matching.
+                     const r = InjectionEngine.inject(m.fieldId, m.value, { force: true });
+                     if (r.success) {
+                       _filledFieldIds.add(m.fieldId);
+                       filledArr.push(m.fieldId);
+                       filledCount++;
+                     } else {
+                       skippedArr.push(m.fieldId);
+                     }
+                  }
+               }
+            }
+
+            // Start correction watchers
+            const domain = DomainIntelligence.getDomain();
+            startCorrectionWatchers(domain, null);
+
+            sendResponse({
+               status: 'success',
+               filled: filledArr,
+               skipped: skippedArr,
+               blocked: [],
+               failed: []
+            });
+            break;
+          }
+
           case 'LEARN_MAPPING': {
             await DomainIntelligence.learnMapping(
               request.fieldIdentifier,

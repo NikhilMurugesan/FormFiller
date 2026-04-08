@@ -57,6 +57,9 @@ class FormField(BaseModel):
 class FieldMappingResult(BaseModel):
     field_id: str
     value: Any
+    confidence: int = 0
+    reason: str = ""
+    source: str = "ai"
 
 
 class AnalyzeResponse(BaseModel):

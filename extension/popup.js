@@ -146,6 +146,7 @@ async function renderProfileDropdown() {
 function setupQuickActions() {
   document.getElementById('btnScan').addEventListener('click', handleScan);
   document.getElementById('btnAutofillAll').addEventListener('click', () => handleAutofill(false));
+  document.getElementById('btnAIAutofill').addEventListener('click', handleAIAutofill);
   document.getElementById('btnFillEmpty').addEventListener('click', () => handleAutofill(true));
   document.getElementById('btnClear').addEventListener('click', handleClear);
   document.getElementById('btnPreview').addEventListener('click', handleScan); // Same as scan
@@ -177,6 +178,106 @@ async function handleScan() {
     setStatus(`Found ${response.totalFields} fields on this page`, 'success');
   } catch (err) {
     setStatus('Error: ' + err.message, 'error');
+  }
+}
+
+async function handleAIAutofill() {
+  const btn = document.getElementById('btnAIAutofill');
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="action-icon">⏳</span> AI Running...';
+  
+  try {
+    const settings = await StorageManager.getSettings();
+    if (!settings.aiAssistEnabled) {
+      throw new Error('AI Assist is disabled in Settings tab.');
+    }
+
+    setStatus('Scanning and using AI for unmatched fields...', 'loading');
+
+    // 1. Scan form
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error('No active tab');
+    await ensureContentScript(tab.id);
+
+    const profile = await StorageManager.getActiveProfile();
+    const domain = new URL(tab.url).hostname;
+    const domainMappings = await StorageManager.getDomainMappings(domain);
+
+    const scanResponse = await sendToContentScript(tab.id, {
+      action: 'SCAN_FORM',
+      profileData: profile?.data || {},
+      domainMappings,
+    });
+
+    if (scanResponse.status !== 'success') throw new Error(scanResponse.error || 'Scan failed');
+
+    // 2. Run AI for unmatched fields
+    const unmatchedFields = scanResponse.mappings.filter(m => m.status === 'unmatched' || m.confidence < 80);
+    
+    if (unmatchedFields.length > 0) {
+      const fieldsPayload = unmatchedFields.map(m => ({
+        id: m.fieldId,
+        name: m.fieldName,
+        label: m.fieldLabel,
+        type: m.fieldType,
+      }));
+
+      const aiResponse = await AIAssist.analyzeFields(fieldsPayload, profile?.data || {}, settings.aiAssistUrl);
+      
+      if (!aiResponse.error && aiResponse.mappings) {
+        for (const aiMap of aiResponse.mappings) {
+          if (!aiMap.value) continue;
+          const target = scanResponse.mappings.find(m => m.fieldId === aiMap.field_id);
+          if (target) {
+            target.value = aiMap.value;
+            target.status = 'matched';
+            target.confidence = aiMap.confidence || 85; 
+            target.matchSource = aiMap.source || 'ai';
+            target.reason = aiMap.reason || '';
+          }
+        }
+      } else if (aiResponse.error) {
+        throw new Error('AI Request failed: ' + aiResponse.error);
+      }
+    }
+
+    // Update UI preview
+    currentScanResults = scanResponse;
+    renderScanResults(scanResponse);
+    setStatus('Review AI suggestions and click Fill!', 'success');
+    
+    // Instead of autofilling all blindly, we instruct content.js to apply the mapped values
+    const fillResponse = await sendToContentScript(tab.id, {
+      action: 'APPLY_MAPPINGS',
+      mappings: scanResponse.mappings, // Array containing static + AI choices
+      profileData: profile?.data || {},
+      domainMappings
+    });
+
+    if (fillResponse.status !== 'success') throw new Error(fillResponse.error || 'Fill failed');
+
+    const filled = fillResponse.filled?.length || 0;
+    const total = scanResponse.totalFields;
+
+    renderFillResults(fillResponse);
+    showProgress(filled, total);
+    
+    chrome.runtime.sendMessage({
+      action: 'UPDATE_BADGE',
+      tabId: tab.id,
+      text: filled > 0 ? String(filled) : '',
+      color: '#7c3aed',
+    });
+
+    setStatus(`✨ ${filled} fields filled with AI`, 'success');
+    showToast(`${filled} fields filled!`, 'success');
+  } catch (err) {
+    setStatus('Error: ' + err.message, 'error');
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
   }
 }
 
@@ -321,19 +422,38 @@ function renderFieldList(mappings, blocked) {
     const conf = m.confidence || 0;
     const confClass = conf >= 80 ? 'high' : conf >= 50 ? 'medium' : 'low';
     const statusClass = m.status === 'matched' ? confClass : 'blocked';
-    const value = m.value ? String(m.value).substring(0, 30) : '—';
-    const profileKey = m.profileKey || 'unmatched';
+    const valueStr = m.value !== undefined && m.value !== null ? String(m.value) : '';
+    const displayValue = valueStr ? truncate(valueStr, 20) : '—';
+    const profileKey = m.profileKey || m.reason || 'unmatched';
+    
+    // Icon based on source
+    let sourceIcon = '🤖';
+    if (m.matchSource === 'profile') sourceIcon = '👤';
+    else if (m.matchSource === 'learned') sourceIcon = '🧠';
+    else if (m.matchSource === 'domain') sourceIcon = '🌐';
+    else if (m.matchSource === 'ai') sourceIcon = '✨';
+    else if (m.matchSource === 'decision') sourceIcon = '⚙️';
 
     return `
-      <div class="field-row" data-field-id="${m.fieldId}">
-        <div class="fr-status ${statusClass}"></div>
-        <div class="fr-info">
-          <div class="fr-name" title="${m.fieldLabel}">${truncate(m.fieldLabel, 22)}</div>
-          <div class="fr-match">${m.status === 'matched' ? profileKey : m.status}</div>
+      <div class="field-row" style="flex-direction:column;align-items:stretch;gap:8px" data-field-id="${m.fieldId}">
+        <div style="display:flex;align-items:center;width:100%;gap:8px;">
+          <div class="fr-status ${statusClass}"></div>
+          <div class="fr-info" style="flex:1">
+            <div class="fr-name" title="${m.fieldLabel}">${truncate(m.fieldLabel, 28)}</div>
+            <div class="fr-match" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+              <span title="Source">${sourceIcon}</span>
+              ${m.status === 'matched' ? `<span>${profileKey}</span>` : `<span style="color:var(--error)">Unmatched</span>`}
+            </div>
+          </div>
+          ${m.status === 'matched' ? `<div class="fr-value" style="flex:1;text-align:right;" title="${escapeHtml(valueStr)}">${escapeHtml(displayValue)}</div>` : ''}
+          ${conf > 0 ? `<span class="fr-confidence ${confClass}" style="margin:0;">${conf}%</span>` : ''}
         </div>
-        ${m.status === 'matched' ? `<div class="fr-value" title="${value}">${truncate(value, 18)}</div>` : ''}
-        ${conf > 0 ? `<span class="fr-confidence ${confClass}">${conf}%</span>` : ''}
-        ${m.status === 'matched' ? `<button class="fr-edit" title="Edit mapping" data-field="${m.fieldId}" data-key="${profileKey}">✏️</button>` : ''}
+        <div class="fr-actions" style="display:flex;gap:4px;align-self:flex-end;">
+          <button class="btn btn-primary btn-sm fr-fill" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">Fill</button>
+          <button class="btn btn-secondary btn-sm fr-ai" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">AI Predict</button>
+          <button class="btn btn-ghost btn-sm fr-edit" data-id="${m.fieldId}" data-val="${escapeHtml(valueStr)}" style="font-size:10px;padding:2px 6px;">Edit</button>
+          <button class="btn btn-ghost btn-sm fr-clear" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">Clear</button>
+        </div>
       </div>
     `;
   }).join('');
@@ -354,25 +474,86 @@ function renderFieldList(mappings, blocked) {
     blockedSection.classList.add('hidden');
   }
 
-  // Edit button handlers
+  // Row button handlers
+  list.querySelectorAll('.fr-fill').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      const target = mappings.find(m => m.fieldId === fieldId);
+      if (!target || !target.value) return showToast('No value to fill', 'warning');
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: target.value });
+        showToast('Filled', 'success');
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  });
+
+  list.querySelectorAll('.fr-clear').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        await sendToContentScript(tab.id, { action: 'CLEAR_SINGLE', fieldId });
+        showToast('Cleared', 'info');
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  });
+
   list.querySelectorAll('.fr-edit').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const fieldId = btn.dataset.field;
-      const currentKey = btn.dataset.key;
-      // For now, show a simple prompt — could be enhanced to a dropdown
-      const newValue = prompt(`Enter new value for "${fieldId}" (currently mapped to: ${currentKey}):`);
-      if (newValue !== null) {
+      const fieldId = btn.dataset.id;
+      const currentVal = btn.dataset.val;
+      const newVal = prompt(`Edit value for this field:`, currentVal);
+      if (newVal !== null) {
+        // Update local state so a future Autofill All uses it
+        const target = mappings.find(m => m.fieldId === fieldId);
+        if (target) { target.value = newVal; target.status = 'matched'; }
+        // Render update & fill
+        renderFieldList(mappings, blocked);
         try {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          await sendToContentScript(tab.id, {
-            action: 'FILL_SINGLE',
-            fieldId,
-            value: newValue,
-          });
-          showToast(`Updated ${fieldId}`, 'success');
-        } catch (err) {
-          showToast('Failed to update: ' + err.message, 'error');
+          await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: newVal });
+          showToast('Updated', 'success');
+        } catch (err) {}
+      }
+    });
+  });
+
+  list.querySelectorAll('.fr-ai').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      const target = mappings.find(m => m.fieldId === fieldId);
+      if (!target) return;
+      
+      btn.textContent = '⏳';
+      try {
+        const profile = await StorageManager.getActiveProfile();
+        const settings = await StorageManager.getSettings();
+        const aiResponse = await AIAssist.analyzeFields(
+          [{ id: target.fieldId, name: target.fieldName, label: target.fieldLabel, type: target.fieldType }],
+          profile?.data || {},
+          settings.aiAssistUrl
+        );
+
+        if (aiResponse.mappings && aiResponse.mappings[0] && aiResponse.mappings[0].value) {
+          target.value = aiResponse.mappings[0].value;
+          target.status = 'matched';
+          target.confidence = aiResponse.mappings[0].confidence || 90;
+          target.matchSource = 'ai';
+          target.reason = aiResponse.mappings[0].reason || 'AI prediction manual request';
+          
+          // Re-render and auto-fill
+          renderFieldList(mappings, blocked);
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: target.value });
+          showToast('AI filled', 'success');
+        } else {
+          showToast('AI returned null or no match', 'warning');
+          btn.textContent = 'AI Predict';
         }
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.textContent = 'AI Predict';
       }
     });
   });

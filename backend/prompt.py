@@ -5,12 +5,14 @@ import json
 SYSTEM_PROMPT = """You are a form-filling AI minimizing token usage. 
 Map fields to the best profile value. 
 Rules:
-1. Provide extremely concise, single-sentence answers. DO NOT write paragraphs.
+1. Provide extremely concise answers. DO NOT write paragraphs.
 2. For sensitive fields (SSN, credit card, passwords) return null.
 3. For select/dropdowns, return the exact option value.
+4. Estimate confidence (0-100) based on how well the profile data matches the field label/intent.
+5. Provide a short 3-5 word reason for the decision.
 
 Respond EXCLUSIVELY with this JSON:
-{"mappings":[{"field_id":"<id>","value":"<short value or null>"}]}"""
+{"mappings":[{"field_id":"<id>","value":"<short value or null>","confidence":85,"reason":"<brief explanation>","source":"ai"}]}"""
 
 
 def build_compact_user_message(user_data: dict, fields: list, doc_chunks: list) -> str:

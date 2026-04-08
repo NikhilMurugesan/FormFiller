@@ -54,8 +54,15 @@ const AIAssist = (() => {
       }
 
       const data = await response.json();
+      const enrichedMappings = (data.mappings || []).map(m => ({
+        ...m,
+        confidence: m.confidence || 0,
+        reason: m.reason || '',
+        source: m.source || 'ai',
+      }));
+
       return {
-        mappings: data.mappings || [],
+        mappings: enrichedMappings,
         latency_sec: data.latency_sec || 0,
         cost_usd: data.cost_usd || 0,
         error: null,
