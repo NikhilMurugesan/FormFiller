@@ -4,3 +4,4 @@ __pycache__
 /.tracing.log
 tracing.log
 err.txt
+user_data_personal.py

@@ -55,33 +55,12 @@ var StorageManager = (() => {
     maxHistoryItems: 50,
   };
 
-  // ─── Pre-loaded Default Profile (from user_data.py) ──────────
+  // ─── Pre-loaded Default Profile ───────────────────────────────
   const PRELOADED_PERSONAL = {
     id:   'personal_default',
     name: 'Personal',
     icon: '👤',
-    data: {
-      full_name:            'Nikhil Murugesan',
-      first_name:           'Nikhil',
-      last_name:            'Murugesan',
-      email:                'mmmm.nikhil@gmail.com',
-      phone:                '+91-9597917991',
-      city:                 'Chennai',
-      state:                'Tamil Nadu',
-      country:              'India',
-      current_company:      'UPS Supply Chain Solutions',
-      current_title:        'Application Developer',
-      linkedin:             'https://www.linkedin.com/in/nikhil-murugesan-2484b4180',
-      portfolio:            'https://nikhilmurugesan.in',
-      website:              'https://nikhilmurugesan.in',
-      github:               'https://github.com/NikhilMurugesan',
-      highest_degree:       "Bachelor's degree",
-      school:               'Vellore Institute of Technology',
-      major:                'Computer Engineering',
-      years_of_experience:  '4',
-      skills:               'Python, Java, Spring Boot, Spring Cloud, FastAPI, Angular, AWS, Docker, OpenShift, Oracle, MySQL, SYBASE, Redis, NLP, Hugging Face, RoBERTa, Sentiment Analysis, LLM Integration, RAG, Feature Engineering, Model Training, Model Evaluation, Microservices, REST APIs, Distributed Systems',
-      summary:              'AI/ML and backend engineer with experience building scalable microservices, data pipelines, NLP systems, and production-grade distributed systems.',
-    },
+    data: { ...DEFAULT_PROFILE_DATA },
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
