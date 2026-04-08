@@ -20,6 +20,10 @@ if (typeof window._ffProInitialized === 'undefined') {
   let _lastScanResults = null;
   let _fabElement = null;
   let _fabMenuElement = null;
+  let _promptPanelElement = null;
+  let _chatgptEnhancerButton = null;
+  let _chatgptEnhancerHost = null;
+  let _lastFocusedEditable = null;
   let _isProcessing = false;
   let _debugMode = false;
 
@@ -141,6 +145,364 @@ if (typeof window._ffProInitialized === 'undefined') {
 
   function hasUsableValue(value) {
     return value !== null && value !== undefined && value !== '';
+  }
+
+  function isEditableElement(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return false;
+    const type = (el.type || 'text').toLowerCase();
+    return !['checkbox', 'radio', 'submit', 'button', 'file', 'hidden', 'range', 'color', 'date'].includes(type);
+  }
+
+  function getPromptTargetElement() {
+    if (isEditableElement(document.activeElement)) return document.activeElement;
+    if (isEditableElement(_lastFocusedEditable)) return _lastFocusedEditable;
+    return null;
+  }
+
+  function getEditableText(el) {
+    if (!el) return '';
+    return el.isContentEditable ? (el.innerText || '').trim() : String(el.value || '').trim();
+  }
+
+  function getEditableLabel(el) {
+    if (!el) return '';
+    return FieldDetector.findLabel(el) || el.getAttribute('aria-label') || el.placeholder || el.name || el.id || el.tagName;
+  }
+
+  function replaceEditableText(el, value) {
+    if (!el) return false;
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = value;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    el.focus();
+    const nextValue = String(value ?? '');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set ||
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(el, nextValue);
+    else el.value = nextValue;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function getPagePromptSource() {
+    const selection = window.getSelection ? String(window.getSelection()).trim() : '';
+    const target = getPromptTargetElement();
+    return {
+      selectedText: selection || null,
+      activeText: getEditableText(target) || null,
+      editableLabel: getEditableLabel(target) || null,
+      hasEditableTarget: !!target,
+    };
+  }
+
+  function isChatGptPage() {
+    const host = window.location.hostname.toLowerCase();
+    return host === 'chatgpt.com' || host.endsWith('.chatgpt.com');
+  }
+
+  function isTravelGptContext() {
+    const path = window.location.pathname.toLowerCase();
+    const title = (document.title || '').toLowerCase();
+    return path.includes('/g/') || title.includes('travel') || title.includes('trip') || title.includes('vacation');
+  }
+
+  function isVisibleElement(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function getChatGptComposerTarget() {
+    const selectors = [
+      '#prompt-textarea',
+      'textarea#prompt-textarea',
+      'div#prompt-textarea[contenteditable="true"]',
+      'form textarea',
+      'form [contenteditable="true"]',
+      '[data-testid="composer-text-input"]',
+      'textarea[placeholder*="Message"]',
+      'textarea[placeholder*="Ask"]',
+    ];
+
+    for (const selector of selectors) {
+      const candidates = Array.from(document.querySelectorAll(selector));
+      const match = candidates.find(candidate => isEditableElement(candidate) && isVisibleElement(candidate));
+      if (match) return match;
+    }
+    return null;
+  }
+
+  function getChatGptConversationContext(maxItems = 6) {
+    const messages = [];
+    const roleNodes = Array.from(document.querySelectorAll('[data-message-author-role]'));
+
+    for (const node of roleNodes) {
+      const role = (node.getAttribute('data-message-author-role') || '').trim().toLowerCase();
+      const text = compactText(node.innerText || '', 1200);
+      if (!role || !text) continue;
+      messages.push({
+        role,
+        title: role === 'assistant' ? 'Assistant' : role === 'user' ? 'User' : role,
+        content: text,
+        tags: ['chatgpt'],
+      });
+    }
+
+    if (messages.length > 0) {
+      return messages.slice(-maxItems);
+    }
+
+    const articleNodes = Array.from(document.querySelectorAll('main article'));
+    for (const node of articleNodes) {
+      const text = compactText(node.innerText || '', 1200);
+      if (!text) continue;
+      messages.push({
+        role: 'context',
+        title: 'Conversation',
+        content: text,
+        tags: ['chatgpt'],
+      });
+    }
+    return messages.slice(-maxItems);
+  }
+
+  function inferPromptKindForChat(text, conversationContext) {
+    const normalized = String(text || '').toLowerCase();
+    const followUpHints = [
+      'make it', 'same', 'this', 'that', 'above', 'continue', 'also',
+      'instead', 'rewrite', 'shorter', 'longer', 'better', 'more detailed',
+      'more concise', 'simplify', 'expand',
+    ];
+    if (followUpHints.some(hint => normalized.includes(hint))) return 'follow_up';
+    if (Array.isArray(conversationContext) && conversationContext.length > 0) return 'follow_up';
+    return 'initial';
+  }
+
+  function getChatGptComposerHost(target) {
+    if (!target) return null;
+
+    const form = target.closest('form');
+    if (!form) return null;
+
+    const sendButton = form.querySelector(
+      'button[type="submit"], button[aria-label*="send" i], button[data-testid*="send" i]'
+    );
+    if (sendButton?.parentElement) {
+      return { form, host: sendButton.parentElement, sendButton, mode: 'inline' };
+    }
+
+    const footer = form.querySelector('[class*="footer"], [class*="actions"], [class*="controls"]');
+    if (footer) {
+      return { form, host: footer, sendButton: null, mode: 'inline' };
+    }
+
+    return { form, host: form, sendButton: null, mode: 'overlay' };
+  }
+
+  function ensureChatGptEnhancerStyles() {
+    if (document.getElementById('ff-pro-chatgpt-enhancer-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'ff-pro-chatgpt-enhancer-styles';
+    style.textContent = `
+      .ff-pro-enhance-btn {
+        appearance: none;
+        border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+        background: color-mix(in srgb, currentColor 8%, transparent);
+        color: inherit;
+        width: 34px;
+        height: 34px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: transform 140ms ease, background 140ms ease, border-color 140ms ease, opacity 140ms ease;
+        backdrop-filter: blur(10px);
+        flex: 0 0 auto;
+      }
+      .ff-pro-enhance-btn:hover {
+        transform: translateY(-1px);
+        background: color-mix(in srgb, currentColor 14%, transparent);
+        border-color: color-mix(in srgb, currentColor 24%, transparent);
+      }
+      .ff-pro-enhance-btn:disabled {
+        opacity: 0.6;
+        cursor: wait;
+        transform: none;
+      }
+      .ff-pro-enhance-btn svg {
+        width: 16px;
+        height: 16px;
+      }
+      .ff-pro-enhance-anchor {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .ff-pro-enhance-anchor.overlay {
+        position: absolute;
+        right: 56px;
+        bottom: 10px;
+        z-index: 2;
+      }
+      .ff-pro-composer-overlay-host {
+        position: relative !important;
+      }
+      @media (max-width: 720px) {
+        .ff-pro-enhance-btn {
+          width: 30px;
+          height: 30px;
+        }
+        .ff-pro-enhance-anchor.overlay {
+          right: 48px;
+          bottom: 8px;
+        }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function createEnhancerButton() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ff-pro-enhance-btn';
+    button.title = 'Enhance prompt';
+    button.setAttribute('aria-label', 'Enhance prompt');
+    button.innerHTML = `
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 3l1.75 5.25L19 10l-5.25 1.75L12 17l-1.75-5.25L5 10l5.25-1.75L12 3Z" fill="currentColor"></path>
+        <path d="M18.5 14l.9 2.6L22 17.5l-2.6.9L18.5 21l-.9-2.6-2.6-.9 2.6-.9.9-2.6Z" fill="currentColor" opacity="0.82"></path>
+      </svg>
+    `;
+    button.addEventListener('click', async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await handleChatGptPromptEnhance(button);
+    });
+    return button;
+  }
+
+  async function requestOptimizedPrompt(sourcePrompt, projectContext = null) {
+    const conversationContext = getChatGptConversationContext();
+    const response = await chrome.runtime.sendMessage({
+      action: 'GET_PROMPT_SETTINGS',
+    }).catch(() => ({ promptSettings: {} }));
+
+    const targetModels = response?.promptSettings?.defaultTargetModels || ['ChatGPT', 'Claude', 'Gemini', 'Copilot'];
+    return await chrome.runtime.sendMessage({
+      action: 'OPTIMIZE_PROMPT',
+      request: {
+        source_prompt: sourcePrompt,
+        project_context: projectContext || null,
+        conversation_context: conversationContext,
+        target_models: targetModels,
+        preserve_intent: response?.promptSettings?.preserveIntent !== false,
+        explanation_style: 'concise',
+        prompt_kind: inferPromptKindForChat(sourcePrompt, conversationContext),
+      },
+    });
+  }
+
+  async function handleChatGptPromptEnhance(button) {
+    const target = getChatGptComposerTarget() || getPromptTargetElement();
+    if (!target) return showToast('Prompt box not found', true);
+
+    const sourceText = getEditableText(target);
+    if (!sourceText) return showToast('Write something first', true);
+
+    const sourceMeta = getPagePromptSource();
+    const context = [
+      isTravelGptContext() ? 'Context: Travel GPT conversation on ChatGPT.' : 'Context: ChatGPT composer.',
+      sourceMeta.editableLabel ? `Field: ${sourceMeta.editableLabel}` : '',
+      document.title ? `Page: ${document.title}` : '',
+    ].filter(Boolean).join('\n');
+
+    const previousLabel = button.getAttribute('aria-label') || 'Enhance prompt';
+    button.disabled = true;
+    button.setAttribute('aria-label', 'Enhancing prompt');
+    button.title = 'Enhancing prompt';
+
+    try {
+      const optimized = await requestOptimizedPrompt(sourceText, context);
+      if (optimized?.error) throw new Error(optimized.error);
+      if (!optimized?.optimized_prompt) throw new Error('No optimized prompt returned');
+      replaceEditableText(target, optimized.optimized_prompt);
+      target.focus();
+      const conciseReason = compactText(
+        optimized.explanation || optimized.summary || 'Prompt enhanced for clarity and context.',
+        160,
+      );
+      showToast(`Prompt enhanced: ${conciseReason}`);
+    } catch (err) {
+      showToast(err.message || 'Prompt enhancement failed', true);
+    } finally {
+      button.disabled = false;
+      button.setAttribute('aria-label', previousLabel);
+      button.title = previousLabel;
+    }
+  }
+
+  function removeChatGptEnhancer() {
+    _chatgptEnhancerButton?.parentElement?.remove();
+    _chatgptEnhancerButton = null;
+    _chatgptEnhancerHost = null;
+  }
+
+  function injectChatGptEnhancer() {
+    if (!isChatGptPage() || !isTravelGptContext()) {
+      removeChatGptEnhancer();
+      return;
+    }
+
+    const target = getChatGptComposerTarget();
+    if (!target) {
+      removeChatGptEnhancer();
+      return;
+    }
+
+    const composer = getChatGptComposerHost(target);
+    if (!composer?.host) {
+      removeChatGptEnhancer();
+      return;
+    }
+
+    if (_chatgptEnhancerButton && _chatgptEnhancerHost === composer.host && composer.host.contains(_chatgptEnhancerButton)) {
+      return;
+    }
+
+    removeChatGptEnhancer();
+    ensureChatGptEnhancerStyles();
+
+    const anchor = document.createElement('div');
+    anchor.className = `ff-pro-enhance-anchor${composer.mode === 'overlay' ? ' overlay' : ''}`;
+    const button = createEnhancerButton();
+    anchor.appendChild(button);
+
+    if (composer.mode === 'inline') {
+      if (composer.sendButton?.parentElement === composer.host) {
+        composer.host.insertBefore(anchor, composer.sendButton);
+      } else {
+        composer.host.appendChild(anchor);
+      }
+    } else {
+      composer.form.classList.add('ff-pro-composer-overlay-host');
+      composer.host.appendChild(anchor);
+    }
+
+    _chatgptEnhancerButton = button;
+    _chatgptEnhancerHost = composer.host;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -294,6 +656,9 @@ if (typeof window._ffProInitialized === 'undefined') {
       <button class="ff-fab-action" data-action="scan">
         <span class="ff-fab-icon">🔍</span> Scan Form
       </button>
+      <button class="ff-fab-action" data-action="optimize-prompt">
+        <span class="ff-fab-icon">P</span> Optimize Prompt
+      </button>
     `;
     document.body.appendChild(_fabMenuElement);
 
@@ -334,6 +699,9 @@ if (typeof window._ffProInitialized === 'undefined') {
           break;
         case 'scan':
           await handleScanFromFab();
+          break;
+        case 'optimize-prompt':
+          await openPromptPanel();
           break;
       }
     });
@@ -390,6 +758,193 @@ if (typeof window._ffProInitialized === 'undefined') {
     toast.textContent = msg;
     toast.className = isError ? 'visible error' : 'visible';
     setTimeout(() => { toast.className = ''; }, 3500);
+  }
+
+  function ensurePromptPanel() {
+    if (document.getElementById('ff-pro-prompt-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'ff-pro-prompt-styles';
+    style.textContent = `
+      #ff-pro-prompt-panel {
+        position: fixed;
+        top: 24px;
+        right: 24px;
+        width: 420px;
+        max-width: calc(100vw - 48px);
+        max-height: calc(100vh - 48px);
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px;
+        background: rgba(15, 12, 41, 0.96);
+        border: 1px solid rgba(167, 139, 250, 0.35);
+        border-radius: 18px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.38);
+        z-index: 2147483647;
+        color: #e2e8f0;
+        font-family: 'Segoe UI', -apple-system, sans-serif;
+      }
+      #ff-pro-prompt-panel.visible { display: flex; }
+      .ff-pro-prompt-row { display: flex; gap: 8px; }
+      .ff-pro-prompt-row > * { flex: 1; }
+      .ff-pro-prompt-panel h4 { margin: 0; font-size: 14px; }
+      .ff-pro-prompt-panel input,
+      .ff-pro-prompt-panel textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(15, 23, 42, 0.7);
+        color: #f8fafc;
+        padding: 10px 12px;
+        font-size: 12px;
+        font-family: inherit;
+      }
+      .ff-pro-prompt-panel textarea { resize: vertical; min-height: 88px; }
+      .ff-pro-prompt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      .ff-pro-prompt-actions button {
+        border: none;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 12px;
+        cursor: pointer;
+        background: rgba(255,255,255,0.06);
+        color: #e2e8f0;
+      }
+      .ff-pro-prompt-actions .primary { background: linear-gradient(135deg, #7c3aed, #ec4899); color: #fff; }
+      .ff-pro-prompt-meta { font-size: 11px; color: #94a3b8; }
+      .ff-pro-prompt-output { min-height: 120px; }
+      .ff-pro-prompt-scroll { overflow-y: auto; max-height: 180px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function buildPromptPanel() {
+    if (_promptPanelElement) return _promptPanelElement;
+    ensurePromptPanel();
+    _promptPanelElement = document.createElement('div');
+    _promptPanelElement.id = 'ff-pro-prompt-panel';
+    _promptPanelElement.className = 'ff-pro-prompt-panel';
+    _promptPanelElement.innerHTML = `
+      <div class="ff-pro-prompt-row">
+        <h4>Prompt Optimizer</h4>
+        <button type="button" id="ff-pro-prompt-close">Close</button>
+      </div>
+      <textarea id="ff-pro-prompt-source" placeholder="Write or capture the prompt to improve"></textarea>
+      <textarea id="ff-pro-prompt-context" placeholder="Optional project context"></textarea>
+      <input id="ff-pro-prompt-models" placeholder="ChatGPT, Claude, Gemini, Copilot">
+      <div class="ff-pro-prompt-actions">
+        <button type="button" id="ff-pro-prompt-capture">Use Selection</button>
+        <button type="button" class="primary" id="ff-pro-prompt-optimize">Optimize</button>
+        <button type="button" id="ff-pro-prompt-evaluate">Evaluate</button>
+        <button type="button" id="ff-pro-prompt-insert">Insert</button>
+        <button type="button" id="ff-pro-prompt-copy">Copy</button>
+      </div>
+      <div class="ff-pro-prompt-meta" id="ff-pro-prompt-meta">Ready</div>
+      <textarea id="ff-pro-prompt-output" class="ff-pro-prompt-output" placeholder="Optimized prompt appears here"></textarea>
+      <div class="ff-pro-prompt-meta ff-pro-prompt-scroll" id="ff-pro-prompt-feedback"></div>
+    `;
+    document.body.appendChild(_promptPanelElement);
+
+    _promptPanelElement.querySelector('#ff-pro-prompt-close').addEventListener('click', closePromptPanel);
+    _promptPanelElement.querySelector('#ff-pro-prompt-capture').addEventListener('click', () => {
+      const source = getPagePromptSource();
+      _promptPanelElement.querySelector('#ff-pro-prompt-source').value = source.selectedText || source.activeText || '';
+      _promptPanelElement.querySelector('#ff-pro-prompt-meta').textContent = source.selectedText ? 'Loaded current selection' : 'Loaded active text field';
+    });
+    _promptPanelElement.querySelector('#ff-pro-prompt-copy').addEventListener('click', async () => {
+      const text = _promptPanelElement.querySelector('#ff-pro-prompt-output').value.trim();
+      if (!text) return showToast('No optimized prompt to copy', true);
+      await navigator.clipboard.writeText(text);
+      showToast('Prompt copied');
+    });
+    _promptPanelElement.querySelector('#ff-pro-prompt-insert').addEventListener('click', () => {
+      const text = _promptPanelElement.querySelector('#ff-pro-prompt-output').value.trim();
+      if (!text) return showToast('No optimized prompt to insert', true);
+      const target = getPromptTargetElement();
+      if (!target) return showToast('Focus a text box first', true);
+      replaceEditableText(target, text);
+      showToast('Inserted optimized prompt');
+    });
+    _promptPanelElement.querySelector('#ff-pro-prompt-optimize').addEventListener('click', runPromptOptimizeFromPage);
+    _promptPanelElement.querySelector('#ff-pro-prompt-evaluate').addEventListener('click', runPromptEvaluateFromPage);
+    return _promptPanelElement;
+  }
+
+  async function openPromptPanel() {
+    const panel = buildPromptPanel();
+    const source = getPagePromptSource();
+    const sourceBox = panel.querySelector('#ff-pro-prompt-source');
+    if (!sourceBox.value.trim()) {
+      sourceBox.value = source.selectedText || source.activeText || '';
+    }
+    if (!panel.querySelector('#ff-pro-prompt-models').value.trim()) {
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'GET_PROMPT_SETTINGS' });
+        const models = response?.promptSettings?.defaultTargetModels || ['ChatGPT', 'Claude', 'Gemini', 'Copilot'];
+        panel.querySelector('#ff-pro-prompt-models').value = models.join(', ');
+      } catch (_) {
+        panel.querySelector('#ff-pro-prompt-models').value = 'ChatGPT, Claude, Gemini, Copilot';
+      }
+    }
+    panel.classList.add('visible');
+  }
+
+  function closePromptPanel() {
+    if (_promptPanelElement) _promptPanelElement.classList.remove('visible');
+  }
+
+  async function runPromptOptimizeFromPage() {
+    const panel = buildPromptPanel();
+    const payload = {
+      source_prompt: panel.querySelector('#ff-pro-prompt-source').value.trim(),
+      project_context: panel.querySelector('#ff-pro-prompt-context').value.trim() || null,
+      target_models: panel.querySelector('#ff-pro-prompt-models').value.split(',').map(item => item.trim()).filter(Boolean),
+    };
+    if (!payload.source_prompt) return showToast('Add prompt text first', true);
+
+    panel.querySelector('#ff-pro-prompt-meta').textContent = 'Optimizing...';
+    const response = await chrome.runtime.sendMessage({ action: 'OPTIMIZE_PROMPT', request: payload });
+    if (response?.error) {
+      panel.querySelector('#ff-pro-prompt-meta').textContent = response.error;
+      return showToast(response.error, true);
+    }
+    panel.querySelector('#ff-pro-prompt-output').value = response.optimized_prompt || '';
+    panel.querySelector('#ff-pro-prompt-feedback').textContent = [
+      response.explanation || '',
+      ...(response.improvements || []),
+      ...(response.warnings || []),
+    ].filter(Boolean).join(' • ');
+    panel.querySelector('#ff-pro-prompt-meta').textContent =
+      `${response.prompt_kind === 'follow_up' ? 'Follow-up' : 'Prompt'} optimized in ${response.latency_sec || 0}s`;
+    showToast('Prompt optimized');
+  }
+
+  async function runPromptEvaluateFromPage() {
+    const panel = buildPromptPanel();
+    const promptText = panel.querySelector('#ff-pro-prompt-output').value.trim() || panel.querySelector('#ff-pro-prompt-source').value.trim();
+    if (!promptText) return showToast('Add prompt text first', true);
+
+    panel.querySelector('#ff-pro-prompt-meta').textContent = 'Evaluating...';
+    const response = await chrome.runtime.sendMessage({
+      action: 'EVALUATE_PROMPT',
+      request: {
+        prompt: promptText,
+        project_context: panel.querySelector('#ff-pro-prompt-context').value.trim() || null,
+        target_models: panel.querySelector('#ff-pro-prompt-models').value.split(',').map(item => item.trim()).filter(Boolean),
+      },
+    });
+    if (response?.error) {
+      panel.querySelector('#ff-pro-prompt-meta').textContent = response.error;
+      return showToast(response.error, true);
+    }
+    const scores = Object.entries(response.dimension_scores || {}).map(([key, value]) => `${key}: ${value}`).join(' • ');
+    const recs = response.recommendations || [];
+    panel.querySelector('#ff-pro-prompt-feedback').textContent = [scores, ...recs].filter(Boolean).join('\n');
+    panel.querySelector('#ff-pro-prompt-meta').textContent = `Score ${response.overall_score || 0}`;
+    if (!_promptPanelElement.querySelector('#ff-pro-prompt-output').value.trim() && response.rewritten_excerpt) {
+      _promptPanelElement.querySelector('#ff-pro-prompt-output').value = response.rewritten_excerpt;
+    }
+    showToast('Prompt evaluated');
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -726,6 +1281,28 @@ if (typeof window._ffProInitialized === 'undefined') {
             break;
           }
 
+          case 'GET_ACTIVE_PROMPT_SOURCE': {
+            const source = getPagePromptSource();
+            sendResponse({
+              status: 'success',
+              ...source,
+              pageTitle: document.title,
+              url: window.location.href,
+            });
+            break;
+          }
+
+          case 'APPLY_ACTIVE_PROMPT_TEXT': {
+            const target = getPromptTargetElement();
+            if (!target) {
+              sendResponse({ status: 'error', error: 'Focus a text box first' });
+              break;
+            }
+            replaceEditableText(target, request.value || '');
+            sendResponse({ status: 'success' });
+            break;
+          }
+
           case 'TOGGLE_FAB': {
             if (_fabElement) {
               _fabElement.style.display = request.show ? 'flex' : 'none';
@@ -778,6 +1355,7 @@ if (typeof window._ffProInitialized === 'undefined') {
   function startCorrectionWatchers(domain, pageType) {
     // Clean up previous watchers
     stopCorrectionWatchers();
+    injectChatGptEnhancer();
 
     if (typeof LearnedMemory === 'undefined') return;
 
@@ -840,6 +1418,23 @@ if (typeof window._ffProInitialized === 'undefined') {
     _correctionListeners = [];
   }
 
+  document.addEventListener('focusin', (event) => {
+    if (isEditableElement(event.target)) {
+      _lastFocusedEditable = event.target;
+    }
+    if (isChatGptPage() && isTravelGptContext()) {
+      setTimeout(() => {
+        injectChatGptEnhancer();
+      }, 0);
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && _promptPanelElement?.classList.contains('visible')) {
+      closePromptPanel();
+    }
+  });
+
   // ═══════════════════════════════════════════════════════════
   // SECTION 6: Initialize
   // ═══════════════════════════════════════════════════════════
@@ -858,6 +1453,14 @@ if (typeof window._ffProInitialized === 'undefined') {
         document.addEventListener('DOMContentLoaded', createFAB);
       }
     }
+    if (isChatGptPage() && isTravelGptContext()) {
+      const inject = () => injectChatGptEnhancer();
+      if (document.body) {
+        inject();
+      } else {
+        document.addEventListener('DOMContentLoaded', inject, { once: true });
+      }
+    }
   });
 
   // Watch for SPA navigation changes
@@ -865,6 +1468,7 @@ if (typeof window._ffProInitialized === 'undefined') {
     _filledFieldIds.clear();
     _lastScanResults = null;
     stopCorrectionWatchers();
+    injectChatGptEnhancer();
     console.log('[FormFiller] DOM change detected — reset state');
   });
 

@@ -37,6 +37,9 @@
     <button class="tab-btn active" data-tab="home">
       <span class="tab-icon">🏠</span> Home
     </button>
+    <button class="tab-btn" data-tab="prompts">
+      <span class="tab-icon">P</span> Prompts
+    </button>
     <button class="tab-btn" data-tab="profiles">
       <span class="tab-icon">👤</span> Profiles
     </button>
@@ -172,6 +175,126 @@
   <!-- ═══════════════════════════════════════════════════════ -->
   <!-- TAB: PROFILES                                           -->
   <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="tab-content" id="tab-prompts">
+    <div class="section">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">P</span> Prompt Optimizer
+          </span>
+          <span id="promptBackendBadge" class="shortcut-pill">Backend</span>
+        </div>
+        <div class="prompt-form">
+          <div class="editor-field full-width">
+            <label>Prompt Title</label>
+            <input type="text" id="promptTitleInput" placeholder="Landing page hero prompt">
+          </div>
+          <div class="editor-field full-width">
+            <label>Source Prompt</label>
+            <textarea id="promptSourceInput" rows="5" placeholder="Paste your rough idea or half-written prompt here"></textarea>
+          </div>
+          <div class="editor-field full-width">
+            <label>Project Context</label>
+            <textarea id="promptContextInput" rows="4" placeholder="Product details, audience, constraints, voice"></textarea>
+          </div>
+          <div class="editor-field">
+            <label>Tone</label>
+            <input type="text" id="promptToneInput" placeholder="Direct, polished, practical">
+          </div>
+          <div class="editor-field">
+            <label>Output Format</label>
+            <input type="text" id="promptFormatInput" placeholder="Bullets, JSON, table">
+          </div>
+          <div class="editor-field full-width">
+            <label>Target Models</label>
+            <input type="text" id="promptModelsInput" placeholder="ChatGPT, Claude, Gemini, Copilot">
+          </div>
+          <div class="editor-field full-width">
+            <label>Tags</label>
+            <input type="text" id="promptTagsInput" placeholder="marketing, launch, copywriting">
+          </div>
+        </div>
+        <div class="io-row mt-2">
+          <button class="btn btn-ghost btn-sm" id="btnUsePagePrompt" style="flex:1;">Use Page Text</button>
+          <button class="btn btn-secondary btn-sm" id="btnEvaluatePrompt" style="flex:1;">Evaluate</button>
+          <button class="btn btn-primary btn-sm" id="btnOptimizePrompt" style="flex:1;">Optimize</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">R</span> Result
+          </span>
+          <span id="promptResultMetrics" style="font-size:10px;color:var(--text-secondary);">No result yet</span>
+        </div>
+        <div id="promptEvaluationPanel" class="prompt-eval-empty">Run optimize or evaluate to see feedback.</div>
+        <div class="editor-field full-width mt-2">
+          <label>Optimized Prompt</label>
+          <textarea id="optimizedPromptOutput" rows="8" placeholder="Optimized prompt will appear here"></textarea>
+        </div>
+        <div id="promptInsights" class="prompt-insights"></div>
+        <div class="io-row mt-2">
+          <button class="btn btn-ghost btn-sm" id="btnCopyOptimizedPrompt" style="flex:1;">Copy</button>
+          <button class="btn btn-secondary btn-sm" id="btnApplyPromptToPage" style="flex:1;">Insert On Page</button>
+          <button class="btn btn-primary btn-sm" id="btnSavePrompt" style="flex:1;">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">C</span> Context Memory
+          </span>
+          <button class="btn btn-ghost btn-sm" id="btnClearContextEditor">Clear</button>
+        </div>
+        <div class="prompt-form">
+          <div class="editor-field">
+            <label>Context Title</label>
+            <input type="text" id="contextTitleInput" placeholder="Brand voice">
+          </div>
+          <div class="editor-field">
+            <label>Context Tags</label>
+            <input type="text" id="contextTagsInput" placeholder="brand, evergreen">
+          </div>
+          <div class="editor-field full-width">
+            <label>Saved Context</label>
+            <select id="contextSelect" class="config-input">
+              <option value="">No saved context selected</option>
+            </select>
+          </div>
+          <div class="editor-field full-width">
+            <label>Context Content</label>
+            <textarea id="contextContentInput" rows="4" placeholder="Save reusable project background, voice, constraints, or product notes"></textarea>
+          </div>
+        </div>
+        <div class="io-row mt-2">
+          <button class="btn btn-ghost btn-sm" id="btnExportContexts" style="flex:1;">Export</button>
+          <button class="btn btn-ghost btn-sm" id="btnImportContexts" style="flex:1;">Import</button>
+          <button class="btn btn-primary btn-sm" id="btnSaveContext" style="flex:1;">Save Context</button>
+        </div>
+        <input type="file" id="importContextsInput" accept=".json" style="display:none;">
+        <div class="prompt-list mt-2" id="promptContextList"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">L</span> Prompt Library
+          </span>
+          <span id="promptLibraryMeta" style="font-size:10px;color:var(--text-secondary);">0 prompts</span>
+        </div>
+        <input class="config-input" id="promptSearchInput" placeholder="Search prompts or tags">
+        <div class="io-row mt-2">
+          <button class="btn btn-ghost btn-sm" id="btnExportPromptLibrary" style="flex:1;">Export</button>
+          <button class="btn btn-ghost btn-sm" id="btnImportPromptLibrary" style="flex:1;">Import</button>
+        </div>
+        <input type="file" id="importPromptLibraryInput" accept=".json" style="display:none;">
+        <div class="prompt-list mt-2" id="promptLibraryList"></div>
+      </div>
+    </div>
+  </div>
+
   <div class="tab-content" id="tab-profiles">
     <div class="section">
 

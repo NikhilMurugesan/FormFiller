@@ -31,6 +31,20 @@ function bgDebug(enabled, ...args) {
   }
 }
 
+async function postBackendJson(path, payload, settings) {
+  const baseUrl = settings?.aiAssistUrl || 'https://form-filler-pi.vercel.app';
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const errorText = await res.text();
+    throw new Error(`API Error: ${res.status} ${errorText || res.statusText}`);
+  }
+  return await res.json();
+}
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 2: Context Menu
 // ═══════════════════════════════════════════════════════════════
@@ -124,6 +138,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           break;
         }
 
+        case 'GET_PROMPT_SETTINGS': {
+          const promptSettings = await storageGet('ff_prompt_settings');
+          sendResponse({ promptSettings: promptSettings || {} });
+          break;
+        }
+
         // ── AI Assist (proxy API call from content script) ───
         case 'ANALYZE_FIELDS': {
           // Legacy: forward to backend API
@@ -158,6 +178,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
 
         // ── Badge Update ─────────────────────────────────────
+        case 'OPTIMIZE_PROMPT': {
+          const settings = await storageGet('ff_settings');
+          try {
+            const data = await postBackendJson('/optimize-prompt', request.request || {}, settings);
+            sendResponse(data);
+          } catch (err) {
+            console.error('[FormFiller BG] Optimize prompt error:', err);
+            sendResponse({ error: err.message });
+          }
+          break;
+        }
+
+        case 'EVALUATE_PROMPT': {
+          const settings = await storageGet('ff_settings');
+          try {
+            const data = await postBackendJson('/evaluate-prompt', request.request || {}, settings);
+            sendResponse(data);
+          } catch (err) {
+            console.error('[FormFiller BG] Evaluate prompt error:', err);
+            sendResponse({ error: err.message });
+          }
+          break;
+        }
+
         case 'UPDATE_BADGE': {
           const tabId = sender.tab?.id || request.tabId;
           if (tabId) {

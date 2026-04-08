@@ -14,6 +14,27 @@ const AIAssist = (() => {
   const DEFAULT_API_URL = 'https://form-filler-pi.vercel.app';
   const SESSION_ID = 'formfiller_session';
 
+  async function postJson(path, payload, apiUrl, timeoutMs = 30000) {
+    const baseUrl = apiUrl || DEFAULT_API_URL;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) {
+      let details = response.statusText;
+      try {
+        const text = await response.text();
+        if (text) details = text;
+      } catch (_) {}
+      throw new Error(`API Error: ${response.status} ${details}`);
+    }
+
+    return await response.json();
+  }
+
   /**
    * Call the backend API to analyze fields using Gemini LLM.
    * 
@@ -23,8 +44,6 @@ const AIAssist = (() => {
    * @returns {{ mappings: Array, latency_sec: number, cost_usd: number, error: string|null }}
    */
   async function analyzeFields(fields, profileData, apiUrl) {
-    const baseUrl = apiUrl || DEFAULT_API_URL;
-    const url = `${baseUrl}/analyze-fields`;
 
     // Compact field format — strip nulls to save tokens
     const compactFields = fields.map(f => {
@@ -38,22 +57,11 @@ const AIAssist = (() => {
     });
 
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fields: compactFields,
-          session_id: SESSION_ID,
-          user_data: profileData,
-        }),
-        signal: AbortSignal.timeout(30000), // 30s timeout
-      });
-
-      if (!response.ok) {
-        throw new Error(`API Error: ${response.status} ${response.statusText}`);
-      }
-
-      const data = await response.json();
+      const data = await postJson('/analyze-fields', {
+        fields: compactFields,
+        session_id: SESSION_ID,
+        user_data: profileData,
+      }, apiUrl, 30000);
       const enrichedMappings = (data.mappings || []).map(m => ({
         ...m,
         confidence: m.confidence || 0,
@@ -71,6 +79,46 @@ const AIAssist = (() => {
       console.error('[AIAssist] API call failed:', err.message);
       return {
         mappings: [],
+        latency_sec: 0,
+        cost_usd: 0,
+        error: err.message,
+      };
+    }
+  }
+
+  async function optimizePrompt(payload, apiUrl) {
+    try {
+      const data = await postJson('/optimize-prompt', payload, apiUrl, 45000);
+      return { ...data, error: null };
+    } catch (err) {
+      console.error('[AIAssist] optimizePrompt failed:', err.message);
+      return {
+        optimized_prompt: '',
+        title: '',
+        summary: '',
+        improvements: [],
+        warnings: [],
+        target_models: [],
+        latency_sec: 0,
+        cost_usd: 0,
+        error: err.message,
+      };
+    }
+  }
+
+  async function evaluatePrompt(payload, apiUrl) {
+    try {
+      const data = await postJson('/evaluate-prompt', payload, apiUrl, 45000);
+      return { ...data, error: null };
+    } catch (err) {
+      console.error('[AIAssist] evaluatePrompt failed:', err.message);
+      return {
+        overall_score: 0,
+        dimension_scores: {},
+        strengths: [],
+        weaknesses: [],
+        recommendations: [],
+        rewritten_excerpt: '',
         latency_sec: 0,
         cost_usd: 0,
         error: err.message,
@@ -146,6 +194,8 @@ const AIAssist = (() => {
 
   return {
     analyzeFields,
+    optimizePrompt,
+    evaluatePrompt,
     isAvailable,
     uploadDocument,
     getDocumentStatus,
