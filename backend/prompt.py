@@ -16,6 +16,22 @@ Respond only as JSON:
 {"suggestions":[{"field_id":"...","detected_intent":"...","suggested_value":"...","source":"rag","confidence":84,"reason":"short reason","status":"matched","candidate_alternatives":["..."]}]}"""
 
 
+PROMPT_OPTIMIZER_SYSTEM_PROMPT = """You are a prompt optimizer for AI assistants.
+Transform rough user ideas into strong, model-agnostic prompts.
+Preserve the user's intent. Improve clarity, structure, context, constraints, and output instructions without adding fake facts.
+
+Respond only as JSON:
+{"title":"short title","summary":"one sentence","optimized_prompt":"full optimized prompt","improvements":["..."],"warnings":["..."],"target_models":["..."]}"""
+
+
+PROMPT_EVALUATOR_SYSTEM_PROMPT = """You evaluate prompt quality for AI assistants.
+Judge clarity, context, specificity, constraints, and output guidance.
+Be direct and practical.
+
+Respond only as JSON:
+{"overall_score":0,"dimension_scores":{"clarity":0,"context":0,"specificity":0,"constraints":0,"output_guidance":0},"strengths":["..."],"weaknesses":["..."],"recommendations":["..."],"rewritten_excerpt":"optional short improved excerpt"}"""
+
+
 def _trim_value(value: Any, max_len: int = 220) -> Any:
     if isinstance(value, str):
         return value[:max_len]
@@ -60,3 +76,37 @@ def build_user_message(
         )
 
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+
+
+def build_optimize_prompt_message(payload: Dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "source_prompt": _trim_value(payload.get("source_prompt"), 4000),
+            "project_context": _trim_value(payload.get("project_context"), 2000),
+            "extra_context": _trim_value(payload.get("extra_context"), 2000),
+            "goal": _trim_value(payload.get("goal"), 400),
+            "audience": _trim_value(payload.get("audience"), 300),
+            "tone": _trim_value(payload.get("tone"), 200),
+            "output_format": _trim_value(payload.get("output_format"), 300),
+            "constraints": _trim_value(payload.get("constraints"), 400),
+            "target_models": _trim_value(payload.get("target_models"), 200),
+            "preserve_intent": bool(payload.get("preserve_intent", True)),
+        },
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
+def build_evaluate_prompt_message(payload: Dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "prompt": _trim_value(payload.get("prompt"), 4000),
+            "project_context": _trim_value(payload.get("project_context"), 2000),
+            "extra_context": _trim_value(payload.get("extra_context"), 2000),
+            "intended_outcome": _trim_value(payload.get("intended_outcome"), 400),
+            "rubric": _trim_value(payload.get("rubric"), 400),
+            "target_models": _trim_value(payload.get("target_models"), 200),
+        },
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )

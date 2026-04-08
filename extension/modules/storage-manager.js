@@ -17,6 +17,9 @@ var StorageManager = (() => {
     ACTIVE_PROFILE: 'ff_active_profile_id',
     DOMAIN_MAPS:    'ff_domain_mappings',
     SETTINGS:       'ff_settings',
+    PROMPT_LIBRARY: 'ff_prompt_library',
+    PROMPT_CONTEXTS: 'ff_prompt_contexts',
+    PROMPT_SETTINGS: 'ff_prompt_settings',
     LEGACY_DATA:    'ff_user_data',       // old format — migrate on first run
     DOC_META:       'ff_doc_meta',
     LEARNED_MEMORY: 'ff_learned_memory',  // checkbox/dropdown/correction memory
@@ -42,6 +45,14 @@ var StorageManager = (() => {
     fillOnlyEmpty:    false,
     showFab:          true,
     keyboardShortcut: 'Alt+Shift+F',
+  };
+
+  const DEFAULT_PROMPT_SETTINGS = {
+    enabled: true,
+    defaultTargetModels: ['ChatGPT', 'Claude', 'Gemini', 'Copilot'],
+    preserveIntent: true,
+    autoSaveHistory: true,
+    maxHistoryItems: 50,
   };
 
   // ─── Pre-loaded Default Profile (from user_data.py) ──────────
@@ -112,8 +123,27 @@ var StorageManager = (() => {
     });
   }
 
+  function _generateEntityId(prefix) {
+    return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
   function _generateId() {
-    return 'profile_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+    return _generateEntityId('profile');
+  }
+
+  function _normalizeTags(tags) {
+    if (!Array.isArray(tags)) return [];
+    const seen = new Set();
+    const output = [];
+    for (const raw of tags) {
+      const tag = String(raw || '').trim();
+      if (!tag) continue;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      output.push(tag);
+    }
+    return output;
   }
 
   // ─── Migration: old ff_user_data → new profile format ────────
@@ -182,6 +212,21 @@ var StorageManager = (() => {
     const maps = await _get(KEYS.DOMAIN_MAPS);
     if (!maps) {
       await _set({ [KEYS.DOMAIN_MAPS]: {} });
+    }
+
+    const promptLibrary = await _get(KEYS.PROMPT_LIBRARY);
+    if (!Array.isArray(promptLibrary)) {
+      await _set({ [KEYS.PROMPT_LIBRARY]: [] });
+    }
+
+    const promptContexts = await _get(KEYS.PROMPT_CONTEXTS);
+    if (!Array.isArray(promptContexts)) {
+      await _set({ [KEYS.PROMPT_CONTEXTS]: [] });
+    }
+
+    const promptSettings = await _get(KEYS.PROMPT_SETTINGS);
+    if (!promptSettings) {
+      await _set({ [KEYS.PROMPT_SETTINGS]: DEFAULT_PROMPT_SETTINGS });
     }
   }
 
@@ -338,6 +383,160 @@ var StorageManager = (() => {
     return merged;
   }
 
+  async function getPromptSettings() {
+    return (await _get(KEYS.PROMPT_SETTINGS)) || { ...DEFAULT_PROMPT_SETTINGS };
+  }
+
+  async function updatePromptSettings(partial) {
+    const current = await getPromptSettings();
+    const merged = { ...current, ...partial };
+    await _set({ [KEYS.PROMPT_SETTINGS]: merged });
+    return merged;
+  }
+
+  async function getPromptLibrary() {
+    const prompts = (await _get(KEYS.PROMPT_LIBRARY)) || [];
+    return prompts.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  }
+
+  async function getPromptById(id) {
+    const prompts = await getPromptLibrary();
+    return prompts.find(p => p.id === id) || null;
+  }
+
+  async function savePrompt(prompt) {
+    const prompts = await getPromptLibrary();
+    const now = new Date().toISOString();
+    const normalized = {
+      id: prompt.id || _generateEntityId('prompt'),
+      title: String(prompt.title || 'Untitled Prompt').trim(),
+      description: String(prompt.description || '').trim(),
+      promptText: String(prompt.promptText || prompt.prompt_text || '').trim(),
+      optimizedPrompt: String(prompt.optimizedPrompt || prompt.optimized_prompt || '').trim(),
+      projectContext: String(prompt.projectContext || prompt.project_context || '').trim(),
+      tags: _normalizeTags(prompt.tags),
+      targetModels: Array.isArray(prompt.targetModels) ? prompt.targetModels.slice(0, 8) : [],
+      source: String(prompt.source || 'manual').trim() || 'manual',
+      favorite: prompt.favorite === true,
+      createdAt: prompt.createdAt || now,
+      updatedAt: now,
+    };
+
+    const idx = prompts.findIndex(p => p.id === normalized.id);
+    if (idx >= 0) {
+      normalized.createdAt = prompts[idx].createdAt || normalized.createdAt;
+      prompts[idx] = normalized;
+    } else {
+      prompts.push(normalized);
+    }
+
+    await _set({ [KEYS.PROMPT_LIBRARY]: prompts });
+    return normalized;
+  }
+
+  async function deletePrompt(id) {
+    const prompts = await getPromptLibrary();
+    await _set({ [KEYS.PROMPT_LIBRARY]: prompts.filter(p => p.id !== id) });
+  }
+
+  async function searchPromptLibrary(query = '', tag = '') {
+    const prompts = await getPromptLibrary();
+    const queryNorm = String(query || '').trim().toLowerCase();
+    const tagNorm = String(tag || '').trim().toLowerCase();
+
+    return prompts.filter(prompt => {
+      const matchesTag = !tagNorm || (prompt.tags || []).some(t => String(t).toLowerCase() === tagNorm);
+      if (!matchesTag) return false;
+      if (!queryNorm) return true;
+
+      const haystack = [
+        prompt.title,
+        prompt.description,
+        prompt.promptText,
+        prompt.optimizedPrompt,
+        prompt.projectContext,
+        ...(prompt.tags || []),
+      ].join(' ').toLowerCase();
+
+      return haystack.includes(queryNorm);
+    });
+  }
+
+  async function exportPromptLibrary() {
+    const prompts = await getPromptLibrary();
+    return JSON.stringify(prompts, null, 2);
+  }
+
+  async function importPromptLibrary(jsonString) {
+    const imported = JSON.parse(jsonString);
+    if (!Array.isArray(imported)) throw new Error('Expected array of prompts');
+    for (const raw of imported) {
+      await savePrompt({
+        ...raw,
+        id: raw.id || _generateEntityId('prompt'),
+        createdAt: raw.createdAt || new Date().toISOString(),
+      });
+    }
+    return await getPromptLibrary();
+  }
+
+  async function getPromptContexts() {
+    const contexts = (await _get(KEYS.PROMPT_CONTEXTS)) || [];
+    return contexts.sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
+  }
+
+  async function getPromptContextById(id) {
+    const contexts = await getPromptContexts();
+    return contexts.find(c => c.id === id) || null;
+  }
+
+  async function savePromptContext(context) {
+    const contexts = await getPromptContexts();
+    const now = new Date().toISOString();
+    const normalized = {
+      id: context.id || _generateEntityId('context'),
+      title: String(context.title || 'Untitled Context').trim(),
+      content: String(context.content || '').trim(),
+      tags: _normalizeTags(context.tags),
+      createdAt: context.createdAt || now,
+      updatedAt: now,
+    };
+
+    const idx = contexts.findIndex(c => c.id === normalized.id);
+    if (idx >= 0) {
+      normalized.createdAt = contexts[idx].createdAt || normalized.createdAt;
+      contexts[idx] = normalized;
+    } else {
+      contexts.push(normalized);
+    }
+
+    await _set({ [KEYS.PROMPT_CONTEXTS]: contexts });
+    return normalized;
+  }
+
+  async function deletePromptContext(id) {
+    const contexts = await getPromptContexts();
+    await _set({ [KEYS.PROMPT_CONTEXTS]: contexts.filter(c => c.id !== id) });
+  }
+
+  async function exportPromptContexts() {
+    const contexts = await getPromptContexts();
+    return JSON.stringify(contexts, null, 2);
+  }
+
+  async function importPromptContexts(jsonString) {
+    const imported = JSON.parse(jsonString);
+    if (!Array.isArray(imported)) throw new Error('Expected array of contexts');
+
+    for (const raw of imported) {
+      await savePromptContext({
+        ...raw,
+        id: raw.id || _generateEntityId('context'),
+        createdAt: raw.createdAt || new Date().toISOString(),
+      });
+    }
+  }
+
   // ─── Document Meta (preserved from original) ────────────────
 
   async function getDocMeta() {
@@ -399,7 +598,7 @@ var StorageManager = (() => {
 
   // ─── Expose ──────────────────────────────────────────────────
   return {
-    KEYS, DEFAULT_PROFILE_DATA,
+    KEYS, DEFAULT_PROFILE_DATA, DEFAULT_PROMPT_SETTINGS,
     init,
     getProfiles, getActiveProfileId, getActiveProfile, setActiveProfile,
     getProfileById, saveProfile, createProfile, deleteProfile, duplicateProfile,
@@ -407,6 +606,11 @@ var StorageManager = (() => {
     getDomainMappings, saveDomainMapping, getAllDomainMappings,
     deleteDomainMapping, clearDomainMappings,
     getSettings, updateSettings,
+    getPromptSettings, updatePromptSettings,
+    getPromptLibrary, getPromptById, savePrompt, deletePrompt,
+    searchPromptLibrary, exportPromptLibrary, importPromptLibrary,
+    getPromptContexts, getPromptContextById, savePromptContext, deletePromptContext,
+    exportPromptContexts, importPromptContexts,
     getDocMeta, setDocMeta, clearDocMeta,
     getLearnedMemory, getLearnedMemoryStats,
     clearLearnedMemory, clearLearnedDomain,

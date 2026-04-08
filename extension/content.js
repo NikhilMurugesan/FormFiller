@@ -20,6 +20,8 @@ if (typeof window._ffProInitialized === 'undefined') {
   let _lastScanResults = null;
   let _fabElement = null;
   let _fabMenuElement = null;
+  let _promptPanelElement = null;
+  let _lastFocusedEditable = null;
   let _isProcessing = false;
   let _debugMode = false;
 
@@ -141,6 +143,64 @@ if (typeof window._ffProInitialized === 'undefined') {
 
   function hasUsableValue(value) {
     return value !== null && value !== undefined && value !== '';
+  }
+
+  function isEditableElement(el) {
+    if (!el) return false;
+    if (el.isContentEditable) return true;
+    const tag = (el.tagName || '').toLowerCase();
+    if (tag === 'textarea') return true;
+    if (tag !== 'input') return false;
+    const type = (el.type || 'text').toLowerCase();
+    return !['checkbox', 'radio', 'submit', 'button', 'file', 'hidden', 'range', 'color', 'date'].includes(type);
+  }
+
+  function getPromptTargetElement() {
+    if (isEditableElement(document.activeElement)) return document.activeElement;
+    if (isEditableElement(_lastFocusedEditable)) return _lastFocusedEditable;
+    return null;
+  }
+
+  function getEditableText(el) {
+    if (!el) return '';
+    return el.isContentEditable ? (el.innerText || '').trim() : String(el.value || '').trim();
+  }
+
+  function getEditableLabel(el) {
+    if (!el) return '';
+    return FieldDetector.findLabel(el) || el.getAttribute('aria-label') || el.placeholder || el.name || el.id || el.tagName;
+  }
+
+  function replaceEditableText(el, value) {
+    if (!el) return false;
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = value;
+      el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+
+    el.focus();
+    const nextValue = String(value ?? '');
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set ||
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(el, nextValue);
+    else el.value = nextValue;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+
+  function getPagePromptSource() {
+    const selection = window.getSelection ? String(window.getSelection()).trim() : '';
+    const target = getPromptTargetElement();
+    return {
+      selectedText: selection || null,
+      activeText: getEditableText(target) || null,
+      editableLabel: getEditableLabel(target) || null,
+      hasEditableTarget: !!target,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -294,6 +354,9 @@ if (typeof window._ffProInitialized === 'undefined') {
       <button class="ff-fab-action" data-action="scan">
         <span class="ff-fab-icon">🔍</span> Scan Form
       </button>
+      <button class="ff-fab-action" data-action="optimize-prompt">
+        <span class="ff-fab-icon">P</span> Optimize Prompt
+      </button>
     `;
     document.body.appendChild(_fabMenuElement);
 
@@ -334,6 +397,9 @@ if (typeof window._ffProInitialized === 'undefined') {
           break;
         case 'scan':
           await handleScanFromFab();
+          break;
+        case 'optimize-prompt':
+          await openPromptPanel();
           break;
       }
     });
@@ -390,6 +456,188 @@ if (typeof window._ffProInitialized === 'undefined') {
     toast.textContent = msg;
     toast.className = isError ? 'visible error' : 'visible';
     setTimeout(() => { toast.className = ''; }, 3500);
+  }
+
+  function ensurePromptPanel() {
+    if (document.getElementById('ff-pro-prompt-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'ff-pro-prompt-styles';
+    style.textContent = `
+      #ff-pro-prompt-panel {
+        position: fixed;
+        top: 24px;
+        right: 24px;
+        width: 420px;
+        max-width: calc(100vw - 48px);
+        max-height: calc(100vh - 48px);
+        display: none;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px;
+        background: rgba(15, 12, 41, 0.96);
+        border: 1px solid rgba(167, 139, 250, 0.35);
+        border-radius: 18px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.38);
+        z-index: 2147483647;
+        color: #e2e8f0;
+        font-family: 'Segoe UI', -apple-system, sans-serif;
+      }
+      #ff-pro-prompt-panel.visible { display: flex; }
+      .ff-pro-prompt-row { display: flex; gap: 8px; }
+      .ff-pro-prompt-row > * { flex: 1; }
+      .ff-pro-prompt-panel h4 { margin: 0; font-size: 14px; }
+      .ff-pro-prompt-panel input,
+      .ff-pro-prompt-panel textarea {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(15, 23, 42, 0.7);
+        color: #f8fafc;
+        padding: 10px 12px;
+        font-size: 12px;
+        font-family: inherit;
+      }
+      .ff-pro-prompt-panel textarea { resize: vertical; min-height: 88px; }
+      .ff-pro-prompt-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+      .ff-pro-prompt-actions button {
+        border: none;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font-size: 12px;
+        cursor: pointer;
+        background: rgba(255,255,255,0.06);
+        color: #e2e8f0;
+      }
+      .ff-pro-prompt-actions .primary { background: linear-gradient(135deg, #7c3aed, #ec4899); color: #fff; }
+      .ff-pro-prompt-meta { font-size: 11px; color: #94a3b8; }
+      .ff-pro-prompt-output { min-height: 120px; }
+      .ff-pro-prompt-scroll { overflow-y: auto; max-height: 180px; }
+    `;
+    document.head.appendChild(style);
+  }
+
+  function buildPromptPanel() {
+    if (_promptPanelElement) return _promptPanelElement;
+    ensurePromptPanel();
+    _promptPanelElement = document.createElement('div');
+    _promptPanelElement.id = 'ff-pro-prompt-panel';
+    _promptPanelElement.className = 'ff-pro-prompt-panel';
+    _promptPanelElement.innerHTML = `
+      <div class="ff-pro-prompt-row">
+        <h4>Prompt Optimizer</h4>
+        <button type="button" id="ff-pro-prompt-close">Close</button>
+      </div>
+      <textarea id="ff-pro-prompt-source" placeholder="Write or capture the prompt to improve"></textarea>
+      <textarea id="ff-pro-prompt-context" placeholder="Optional project context"></textarea>
+      <input id="ff-pro-prompt-models" placeholder="ChatGPT, Claude, Gemini, Copilot">
+      <div class="ff-pro-prompt-actions">
+        <button type="button" id="ff-pro-prompt-capture">Use Selection</button>
+        <button type="button" class="primary" id="ff-pro-prompt-optimize">Optimize</button>
+        <button type="button" id="ff-pro-prompt-evaluate">Evaluate</button>
+        <button type="button" id="ff-pro-prompt-insert">Insert</button>
+        <button type="button" id="ff-pro-prompt-copy">Copy</button>
+      </div>
+      <div class="ff-pro-prompt-meta" id="ff-pro-prompt-meta">Ready</div>
+      <textarea id="ff-pro-prompt-output" class="ff-pro-prompt-output" placeholder="Optimized prompt appears here"></textarea>
+      <div class="ff-pro-prompt-meta ff-pro-prompt-scroll" id="ff-pro-prompt-feedback"></div>
+    `;
+    document.body.appendChild(_promptPanelElement);
+
+    _promptPanelElement.querySelector('#ff-pro-prompt-close').addEventListener('click', closePromptPanel);
+    _promptPanelElement.querySelector('#ff-pro-prompt-capture').addEventListener('click', () => {
+      const source = getPagePromptSource();
+      _promptPanelElement.querySelector('#ff-pro-prompt-source').value = source.selectedText || source.activeText || '';
+      _promptPanelElement.querySelector('#ff-pro-prompt-meta').textContent = source.selectedText ? 'Loaded current selection' : 'Loaded active text field';
+    });
+    _promptPanelElement.querySelector('#ff-pro-prompt-copy').addEventListener('click', async () => {
+      const text = _promptPanelElement.querySelector('#ff-pro-prompt-output').value.trim();
+      if (!text) return showToast('No optimized prompt to copy', true);
+      await navigator.clipboard.writeText(text);
+      showToast('Prompt copied');
+    });
+    _promptPanelElement.querySelector('#ff-pro-prompt-insert').addEventListener('click', () => {
+      const text = _promptPanelElement.querySelector('#ff-pro-prompt-output').value.trim();
+      if (!text) return showToast('No optimized prompt to insert', true);
+      const target = getPromptTargetElement();
+      if (!target) return showToast('Focus a text box first', true);
+      replaceEditableText(target, text);
+      showToast('Inserted optimized prompt');
+    });
+    _promptPanelElement.querySelector('#ff-pro-prompt-optimize').addEventListener('click', runPromptOptimizeFromPage);
+    _promptPanelElement.querySelector('#ff-pro-prompt-evaluate').addEventListener('click', runPromptEvaluateFromPage);
+    return _promptPanelElement;
+  }
+
+  async function openPromptPanel() {
+    const panel = buildPromptPanel();
+    const source = getPagePromptSource();
+    const sourceBox = panel.querySelector('#ff-pro-prompt-source');
+    if (!sourceBox.value.trim()) {
+      sourceBox.value = source.selectedText || source.activeText || '';
+    }
+    if (!panel.querySelector('#ff-pro-prompt-models').value.trim()) {
+      try {
+        const response = await chrome.runtime.sendMessage({ action: 'GET_PROMPT_SETTINGS' });
+        const models = response?.promptSettings?.defaultTargetModels || ['ChatGPT', 'Claude', 'Gemini', 'Copilot'];
+        panel.querySelector('#ff-pro-prompt-models').value = models.join(', ');
+      } catch (_) {
+        panel.querySelector('#ff-pro-prompt-models').value = 'ChatGPT, Claude, Gemini, Copilot';
+      }
+    }
+    panel.classList.add('visible');
+  }
+
+  function closePromptPanel() {
+    if (_promptPanelElement) _promptPanelElement.classList.remove('visible');
+  }
+
+  async function runPromptOptimizeFromPage() {
+    const panel = buildPromptPanel();
+    const payload = {
+      source_prompt: panel.querySelector('#ff-pro-prompt-source').value.trim(),
+      project_context: panel.querySelector('#ff-pro-prompt-context').value.trim() || null,
+      target_models: panel.querySelector('#ff-pro-prompt-models').value.split(',').map(item => item.trim()).filter(Boolean),
+    };
+    if (!payload.source_prompt) return showToast('Add prompt text first', true);
+
+    panel.querySelector('#ff-pro-prompt-meta').textContent = 'Optimizing...';
+    const response = await chrome.runtime.sendMessage({ action: 'OPTIMIZE_PROMPT', request: payload });
+    if (response?.error) {
+      panel.querySelector('#ff-pro-prompt-meta').textContent = response.error;
+      return showToast(response.error, true);
+    }
+    panel.querySelector('#ff-pro-prompt-output').value = response.optimized_prompt || '';
+    panel.querySelector('#ff-pro-prompt-feedback').textContent = [...(response.improvements || []), ...(response.warnings || [])].join(' • ');
+    panel.querySelector('#ff-pro-prompt-meta').textContent = `Optimized in ${response.latency_sec || 0}s`;
+    showToast('Prompt optimized');
+  }
+
+  async function runPromptEvaluateFromPage() {
+    const panel = buildPromptPanel();
+    const promptText = panel.querySelector('#ff-pro-prompt-output').value.trim() || panel.querySelector('#ff-pro-prompt-source').value.trim();
+    if (!promptText) return showToast('Add prompt text first', true);
+
+    panel.querySelector('#ff-pro-prompt-meta').textContent = 'Evaluating...';
+    const response = await chrome.runtime.sendMessage({
+      action: 'EVALUATE_PROMPT',
+      request: {
+        prompt: promptText,
+        project_context: panel.querySelector('#ff-pro-prompt-context').value.trim() || null,
+        target_models: panel.querySelector('#ff-pro-prompt-models').value.split(',').map(item => item.trim()).filter(Boolean),
+      },
+    });
+    if (response?.error) {
+      panel.querySelector('#ff-pro-prompt-meta').textContent = response.error;
+      return showToast(response.error, true);
+    }
+    const scores = Object.entries(response.dimension_scores || {}).map(([key, value]) => `${key}: ${value}`).join(' • ');
+    const recs = response.recommendations || [];
+    panel.querySelector('#ff-pro-prompt-feedback').textContent = [scores, ...recs].filter(Boolean).join('\n');
+    panel.querySelector('#ff-pro-prompt-meta').textContent = `Score ${response.overall_score || 0}`;
+    if (!_promptPanelElement.querySelector('#ff-pro-prompt-output').value.trim() && response.rewritten_excerpt) {
+      _promptPanelElement.querySelector('#ff-pro-prompt-output').value = response.rewritten_excerpt;
+    }
+    showToast('Prompt evaluated');
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -726,6 +974,28 @@ if (typeof window._ffProInitialized === 'undefined') {
             break;
           }
 
+          case 'GET_ACTIVE_PROMPT_SOURCE': {
+            const source = getPagePromptSource();
+            sendResponse({
+              status: 'success',
+              ...source,
+              pageTitle: document.title,
+              url: window.location.href,
+            });
+            break;
+          }
+
+          case 'APPLY_ACTIVE_PROMPT_TEXT': {
+            const target = getPromptTargetElement();
+            if (!target) {
+              sendResponse({ status: 'error', error: 'Focus a text box first' });
+              break;
+            }
+            replaceEditableText(target, request.value || '');
+            sendResponse({ status: 'success' });
+            break;
+          }
+
           case 'TOGGLE_FAB': {
             if (_fabElement) {
               _fabElement.style.display = request.show ? 'flex' : 'none';
@@ -839,6 +1109,18 @@ if (typeof window._ffProInitialized === 'undefined') {
     }
     _correctionListeners = [];
   }
+
+  document.addEventListener('focusin', (event) => {
+    if (isEditableElement(event.target)) {
+      _lastFocusedEditable = event.target;
+    }
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && _promptPanelElement?.classList.contains('visible')) {
+      closePromptPanel();
+    }
+  });
 
   // ═══════════════════════════════════════════════════════════
   // SECTION 6: Initialize

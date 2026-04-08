@@ -176,3 +176,74 @@ class AnalyzeFieldsResponse(ContractModel):
     latency_sec: float = 0.0
     cost_usd: float = 0.0
     debug: Optional[Dict[str, Any]] = None
+
+
+class PromptContextItem(ContractModel):
+    context_id: Optional[str] = None
+    title: Optional[str] = None
+    content: str = ""
+    tags: List[str] = Field(default_factory=list)
+
+
+class SavedPrompt(ContractModel):
+    prompt_id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    prompt_text: str = ""
+    project_context: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    target_models: List[str] = Field(default_factory=list)
+    source: Optional[str] = None
+    favorite: bool = False
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+
+class OptimizePromptRequest(ContractModel):
+    contract_version: str = "2026-04-08"
+    source_prompt: str
+    project_context: Optional[str] = None
+    extra_context: List[PromptContextItem] = Field(default_factory=list)
+    goal: Optional[str] = None
+    audience: Optional[str] = None
+    tone: Optional[str] = None
+    output_format: Optional[str] = None
+    constraints: List[str] = Field(default_factory=list)
+    target_models: List[str] = Field(default_factory=list)
+    preserve_intent: bool = True
+
+
+class OptimizePromptResponse(ContractModel):
+    contract_version: str = "2026-04-08"
+    request_id: str
+    optimized_prompt: str
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    improvements: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    target_models: List[str] = Field(default_factory=list)
+    latency_sec: float = 0.0
+    cost_usd: float = 0.0
+
+
+class EvaluatePromptRequest(ContractModel):
+    contract_version: str = "2026-04-08"
+    prompt: str
+    project_context: Optional[str] = None
+    extra_context: List[PromptContextItem] = Field(default_factory=list)
+    intended_outcome: Optional[str] = None
+    rubric: List[str] = Field(default_factory=list)
+    target_models: List[str] = Field(default_factory=list)
+
+
+class EvaluatePromptResponse(ContractModel):
+    contract_version: str = "2026-04-08"
+    request_id: str
+    overall_score: int = 0
+    dimension_scores: Dict[str, int] = Field(default_factory=dict)
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
+    recommendations: List[str] = Field(default_factory=list)
+    rewritten_excerpt: Optional[str] = None
+    latency_sec: float = 0.0
+    cost_usd: float = 0.0

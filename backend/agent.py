@@ -12,9 +12,23 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from .contracts import AnalyzeFieldsResponse, FieldSuggestion
+from .contracts import (
+    AnalyzeFieldsResponse,
+    EvaluatePromptRequest,
+    EvaluatePromptResponse,
+    FieldSuggestion,
+    OptimizePromptRequest,
+    OptimizePromptResponse,
+)
 from .normalization import flatten_profile_data, profile_value_for_intent
-from .prompt import SYSTEM_PROMPT, build_user_message
+from .prompt import (
+    PROMPT_EVALUATOR_SYSTEM_PROMPT,
+    PROMPT_OPTIMIZER_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
+    build_evaluate_prompt_message,
+    build_optimize_prompt_message,
+    build_user_message,
+)
 from .user_data import get_user_data
 
 load_dotenv()
@@ -634,6 +648,201 @@ def resolve_sensitive(field: Dict[str, Any]) -> FieldSuggestion | None:
     return None
 
 
+def _calculate_response_cost(response: Any) -> float:
+    prompt_tokens = response.usage_metadata.prompt_token_count if response.usage_metadata else 0
+    output_tokens = response.usage_metadata.candidates_token_count if response.usage_metadata else 0
+    return (prompt_tokens / 1_000_000) * PRICE_PER_1M_PROMPT + (output_tokens / 1_000_000) * PRICE_PER_1M_CANDIDATE
+
+
+def _parse_json_payload(text: str) -> Dict[str, Any]:
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(text[start : end + 1])
+        raise
+
+
+def _normalize_text_list(value: Any, *, max_items: int = 6) -> List[str]:
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, list):
+        items = value
+    else:
+        return []
+
+    output: List[str] = []
+    for item in items:
+        text = str(item).strip()
+        if text and text not in output:
+            output.append(text)
+        if len(output) >= max_items:
+            break
+    return output
+
+
+def _context_items_payload(items: List[Any]) -> List[Dict[str, Any]]:
+    serialized: List[Dict[str, Any]] = []
+    for item in items or []:
+        if hasattr(item, "model_dump"):
+            raw = item.model_dump()
+        elif isinstance(item, dict):
+            raw = item
+        else:
+            continue
+        content = str(raw.get("content") or "").strip()
+        if not content:
+            continue
+        serialized.append(
+            {
+                "context_id": raw.get("context_id"),
+                "title": raw.get("title"),
+                "content": content,
+                "tags": raw.get("tags") or [],
+            }
+        )
+    return serialized
+
+
+async def _run_json_llm(
+    user_message: str,
+    system_instruction: str,
+    *,
+    log_label: str,
+    temperature: float = 0.0,
+) -> Tuple[Dict[str, Any] | None, float]:
+    last_error: Exception | None = None
+
+    for attempt in range(MAX_LLM_RETRIES + 1):
+        try:
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=user_message,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_instruction,
+                    response_mime_type="application/json",
+                    temperature=temperature,
+                ),
+            )
+            cost = _calculate_response_cost(response)
+            data = _parse_json_payload(response.text or "{}")
+            return data, cost
+        except Exception as exc:
+            last_error = exc
+            error_str = str(exc)
+            is_retryable = RETRYABLE_LLM_STATUS_RE.search(error_str) is not None
+            if attempt < MAX_LLM_RETRIES and is_retryable:
+                delay_sec = 2 * (attempt + 1)
+                _trace(
+                    f"{log_label} failed on attempt {attempt + 1}/{MAX_LLM_RETRIES + 1} with retryable error: "
+                    f"{error_str}. Retrying in {delay_sec}s.",
+                    "WARNING",
+                )
+                await asyncio.sleep(delay_sec)
+                continue
+
+            _trace(f"{log_label} failed: {error_str}", "ERROR")
+            break
+
+    if last_error:
+        _trace(f"{log_label} unavailable after retries: {last_error}", "WARNING")
+    return None, 0.0
+
+
+def _fallback_optimized_prompt(request: OptimizePromptRequest) -> str:
+    sections: List[str] = []
+
+    if request.goal:
+        sections.append(f"Goal:\n{request.goal}")
+    if request.audience:
+        sections.append(f"Audience:\n{request.audience}")
+    if request.project_context:
+        sections.append(f"Project Context:\n{request.project_context}")
+
+    extra_context = _context_items_payload(request.extra_context)
+    if extra_context:
+        context_lines = []
+        for item in extra_context[:4]:
+            heading = item.get("title") or "Context"
+            context_lines.append(f"- {heading}: {item['content']}")
+        sections.append("Additional Context:\n" + "\n".join(context_lines))
+
+    sections.append(f"Task:\n{request.source_prompt.strip()}")
+
+    output_lines = []
+    if request.output_format:
+        output_lines.append(f"Use this format: {request.output_format}")
+    if request.tone:
+        output_lines.append(f"Match this tone: {request.tone}")
+    if request.target_models:
+        output_lines.append("Keep wording compatible with: " + ", ".join(request.target_models[:6]))
+    output_lines.append("Be precise, explicit, and avoid inventing facts.")
+    if request.constraints:
+        output_lines.extend(request.constraints[:8])
+    sections.append("Output Requirements:\n" + "\n".join(f"- {line}" for line in output_lines))
+
+    return "\n\n".join(section for section in sections if section.strip())
+
+
+def _fallback_prompt_evaluation(request: EvaluatePromptRequest) -> EvaluatePromptResponse:
+    prompt_text = (request.prompt or "").strip()
+    lower_prompt = prompt_text.lower()
+    dimension_scores = {
+        "clarity": 65 if len(prompt_text) >= 40 else 45,
+        "context": 75 if request.project_context or request.extra_context else 40,
+        "specificity": 72 if any(token in lower_prompt for token in ("must", "should", "include", "avoid")) else 48,
+        "constraints": 70 if any(token in lower_prompt for token in ("do not", "avoid", "limit", "exactly")) else 42,
+        "output_guidance": 76 if any(token in lower_prompt for token in ("format", "json", "table", "bullet")) else 44,
+    }
+    overall_score = int(round(sum(dimension_scores.values()) / len(dimension_scores)))
+
+    strengths = []
+    if dimension_scores["context"] >= 70:
+        strengths.append("Includes useful supporting context.")
+    if dimension_scores["output_guidance"] >= 70:
+        strengths.append("Gives the model concrete output expectations.")
+    if not strengths:
+        strengths.append("Captures a recognizable user intent.")
+
+    weaknesses = []
+    if dimension_scores["context"] < 60:
+        weaknesses.append("Missing project or background context.")
+    if dimension_scores["constraints"] < 60:
+        weaknesses.append("Does not clearly state constraints or failure boundaries.")
+    if dimension_scores["specificity"] < 60:
+        weaknesses.append("Task instructions are still broad or underspecified.")
+
+    recommendations = [
+        "State the goal, audience, and definition of success explicitly.",
+        "Add concrete constraints, edge cases, and things the model must avoid.",
+        "Specify the exact output structure you want back.",
+    ]
+
+    rewritten_excerpt = None
+    if prompt_text:
+        rewritten_excerpt = _fallback_optimized_prompt(
+            OptimizePromptRequest(
+                source_prompt=prompt_text,
+                project_context=request.project_context,
+                extra_context=request.extra_context,
+                goal=request.intended_outcome,
+                target_models=request.target_models,
+            )
+        )
+
+    return EvaluatePromptResponse(
+        request_id=f"req_{uuid4().hex[:12]}",
+        overall_score=overall_score,
+        dimension_scores=dimension_scores,
+        strengths=strengths,
+        weaknesses=weaknesses,
+        recommendations=recommendations,
+        rewritten_excerpt=rewritten_excerpt,
+    )
+
+
 async def run_llm(
     profile_data: Dict[str, Any],
     normalized_context: Dict[str, Any],
@@ -644,52 +853,123 @@ async def run_llm(
         return [], 0.0
 
     user_message = build_user_message(profile_data, normalized_context, llm_fields, retrieval_context)
-    last_error: Exception | None = None
+    data, cost = await _run_json_llm(
+        user_message,
+        SYSTEM_PROMPT,
+        log_label="Field analysis LLM call",
+        temperature=0.0,
+    )
+    if not data:
+        return [], 0.0
 
-    for attempt in range(MAX_LLM_RETRIES + 1):
+    suggestions = []
+    for raw in data.get("suggestions", []):
         try:
-            response = await client.aio.models.generate_content(
-                model=MODEL_NAME,
-                contents=user_message,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                ),
-            )
-
-            prompt_tokens = response.usage_metadata.prompt_token_count if response.usage_metadata else 0
-            output_tokens = response.usage_metadata.candidates_token_count if response.usage_metadata else 0
-            cost = (prompt_tokens / 1_000_000) * PRICE_PER_1M_PROMPT + (output_tokens / 1_000_000) * PRICE_PER_1M_CANDIDATE
-            data = json.loads(response.text)
-            suggestions = []
-            for raw in data.get("suggestions", []):
-                try:
-                    suggestions.append(FieldSuggestion(**raw))
-                except Exception as exc:
-                    _trace(f"Invalid LLM suggestion skipped: {exc} | payload={raw}", "WARNING")
-            _trace(f"LLM returned {len(suggestions)} suggestion(s). Cost=${cost:.6f}")
-            return suggestions, cost
+            suggestions.append(FieldSuggestion(**raw))
         except Exception as exc:
-            last_error = exc
-            error_str = str(exc)
-            is_retryable = RETRYABLE_LLM_STATUS_RE.search(error_str) is not None
-            if attempt < MAX_LLM_RETRIES and is_retryable:
-                delay_sec = 2 * (attempt + 1)
-                _trace(
-                    f"LLM call failed on attempt {attempt + 1}/{MAX_LLM_RETRIES + 1} with retryable error: {error_str}. "
-                    f"Retrying in {delay_sec}s.",
-                    "WARNING",
-                )
-                await asyncio.sleep(delay_sec)
-                continue
+            _trace(f"Invalid LLM suggestion skipped: {exc} | payload={raw}", "WARNING")
+    _trace(f"LLM returned {len(suggestions)} suggestion(s). Cost=${cost:.6f}")
+    return suggestions, cost
 
-            _trace(f"LLM call failed: {error_str}", "ERROR")
-            break
 
-    if last_error:
-        _trace(f"Proceeding without LLM suggestions due to upstream failure: {last_error}", "WARNING")
-    return [], 0.0
+async def optimize_prompt_request(request: OptimizePromptRequest) -> OptimizePromptResponse:
+    started = time.time()
+    request_id = f"req_{uuid4().hex[:12]}"
+    payload = {
+        "source_prompt": request.source_prompt,
+        "project_context": request.project_context,
+        "extra_context": _context_items_payload(request.extra_context),
+        "goal": request.goal,
+        "audience": request.audience,
+        "tone": request.tone,
+        "output_format": request.output_format,
+        "constraints": request.constraints,
+        "target_models": request.target_models,
+        "preserve_intent": request.preserve_intent,
+    }
+    data, cost = await _run_json_llm(
+        build_optimize_prompt_message(payload),
+        PROMPT_OPTIMIZER_SYSTEM_PROMPT,
+        log_label="Prompt optimizer",
+        temperature=0.2,
+    )
+
+    optimized_prompt = (data or {}).get("optimized_prompt") or _fallback_optimized_prompt(request)
+    title = (data or {}).get("title") or "Optimized Prompt"
+    summary = (data or {}).get("summary") or "Restructured for clearer instructions and stronger output guidance."
+    improvements = _normalize_text_list((data or {}).get("improvements")) or [
+        "Adds clearer task framing and response guidance.",
+        "Organizes context and constraints so the model has less room to guess.",
+    ]
+    warnings = _normalize_text_list((data or {}).get("warnings"))
+    if not data:
+        warnings = warnings or ["LLM optimizer unavailable; returned a local fallback structure."]
+
+    target_models = _normalize_text_list((data or {}).get("target_models"), max_items=8) or list(request.target_models[:8])
+
+    return OptimizePromptResponse(
+        request_id=request_id,
+        optimized_prompt=str(optimized_prompt).strip(),
+        title=title,
+        summary=summary,
+        improvements=improvements,
+        warnings=warnings,
+        target_models=target_models,
+        latency_sec=round(time.time() - started, 2),
+        cost_usd=round(cost, 6),
+    )
+
+
+async def evaluate_prompt_request(request: EvaluatePromptRequest) -> EvaluatePromptResponse:
+    started = time.time()
+    payload = {
+        "prompt": request.prompt,
+        "project_context": request.project_context,
+        "extra_context": _context_items_payload(request.extra_context),
+        "intended_outcome": request.intended_outcome,
+        "rubric": request.rubric,
+        "target_models": request.target_models,
+    }
+    data, cost = await _run_json_llm(
+        build_evaluate_prompt_message(payload),
+        PROMPT_EVALUATOR_SYSTEM_PROMPT,
+        log_label="Prompt evaluator",
+        temperature=0.1,
+    )
+
+    if not data:
+        fallback = _fallback_prompt_evaluation(request)
+        fallback.latency_sec = round(time.time() - started, 2)
+        fallback.cost_usd = 0.0
+        return fallback
+
+    overall_score = int((data.get("overall_score") or 0))
+    dimension_scores_raw = data.get("dimension_scores") or {}
+    dimension_scores = {
+        str(key): max(0, min(100, int(value)))
+        for key, value in dimension_scores_raw.items()
+        if str(key).strip()
+    }
+    if not dimension_scores:
+        dimension_scores = {
+            "clarity": overall_score,
+            "context": overall_score,
+            "specificity": overall_score,
+            "constraints": overall_score,
+            "output_guidance": overall_score,
+        }
+
+    return EvaluatePromptResponse(
+        request_id=f"req_{uuid4().hex[:12]}",
+        overall_score=max(0, min(100, overall_score)),
+        dimension_scores=dimension_scores,
+        strengths=_normalize_text_list(data.get("strengths")),
+        weaknesses=_normalize_text_list(data.get("weaknesses")),
+        recommendations=_normalize_text_list(data.get("recommendations")),
+        rewritten_excerpt=(str(data.get("rewritten_excerpt")).strip() if data.get("rewritten_excerpt") else None),
+        latency_sec=round(time.time() - started, 2),
+        cost_usd=round(cost, 6),
+    )
 
 
 def coerce_llm_suggestion(

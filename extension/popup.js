@@ -17,6 +17,9 @@
 
 let currentScanResults = null;
 let editingProfileId = null;
+let promptEvaluationState = null;
+let currentEditingPromptId = null;
+let currentEditingContextId = null;
 const AI_REVIEW_CONFIDENCE_THRESHOLD = 88;
 const AI_MATCH_CONFIDENCE_THRESHOLD = 80;
 const AI_UNCERTAIN_CONFIDENCE_THRESHOLD = 55;
@@ -256,6 +259,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadDocumentStatus();
   await loadDomainMappings();
   await loadLearnedMemory();
+  await loadPromptWorkspace();
 
   // Set up event listeners
   setupTabNavigation();
@@ -265,6 +269,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupDocumentUpload();
   setupProfileDropdown();
   setupLearnedMemoryActions();
+  setupPromptActions();
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -1578,7 +1583,500 @@ function setupLearnedMemoryActions() {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// SECTION 10: Document Upload (Preserved)
+// SECTION 10: Prompt Assistant
+
+function parseCommaSeparated(value) {
+  return String(value || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function getPromptFormData() {
+  return {
+    title: document.getElementById('promptTitleInput').value.trim(),
+    sourcePrompt: document.getElementById('promptSourceInput').value.trim(),
+    projectContext: document.getElementById('promptContextInput').value.trim(),
+    tone: document.getElementById('promptToneInput').value.trim(),
+    outputFormat: document.getElementById('promptFormatInput').value.trim(),
+    targetModels: parseCommaSeparated(document.getElementById('promptModelsInput').value),
+    tags: parseCommaSeparated(document.getElementById('promptTagsInput').value),
+  };
+}
+
+async function loadPromptWorkspace() {
+  const promptSettings = await StorageManager.getPromptSettings();
+  const modelsInput = document.getElementById('promptModelsInput');
+  if (modelsInput && !modelsInput.value) {
+    modelsInput.value = (promptSettings.defaultTargetModels || []).join(', ');
+  }
+  await Promise.all([
+    renderPromptLibrary(),
+    renderPromptContexts(),
+    updatePromptBackendBadge(),
+  ]);
+}
+
+async function updatePromptBackendBadge() {
+  const badge = document.getElementById('promptBackendBadge');
+  const settings = await StorageManager.getSettings();
+  const available = await AIAssist.isAvailable(settings.aiAssistUrl);
+  badge.textContent = available ? 'Backend Ready' : 'Backend Offline';
+  badge.style.color = available ? 'var(--success)' : 'var(--warning)';
+}
+
+function setupPromptActions() {
+  document.getElementById('btnUsePagePrompt').addEventListener('click', handleUsePagePrompt);
+  document.getElementById('btnOptimizePrompt').addEventListener('click', handleOptimizePrompt);
+  document.getElementById('btnEvaluatePrompt').addEventListener('click', handleEvaluatePrompt);
+  document.getElementById('btnCopyOptimizedPrompt').addEventListener('click', handleCopyOptimizedPrompt);
+  document.getElementById('btnApplyPromptToPage').addEventListener('click', handleApplyPromptToPage);
+  document.getElementById('btnSavePrompt').addEventListener('click', handleSavePrompt);
+  document.getElementById('btnSaveContext').addEventListener('click', handleSaveContext);
+  document.getElementById('btnClearContextEditor').addEventListener('click', clearContextEditor);
+  document.getElementById('contextSelect').addEventListener('change', handleContextSelect);
+  document.getElementById('btnExportPromptLibrary').addEventListener('click', handleExportPromptLibrary);
+  document.getElementById('btnImportPromptLibrary').addEventListener('click', () => {
+    document.getElementById('importPromptLibraryInput').click();
+  });
+  document.getElementById('btnExportContexts').addEventListener('click', handleExportContexts);
+  document.getElementById('btnImportContexts').addEventListener('click', () => {
+    document.getElementById('importContextsInput').click();
+  });
+  document.getElementById('promptSearchInput').addEventListener('input', renderPromptLibrary);
+  document.getElementById('importPromptLibraryInput').addEventListener('change', handleImportPromptLibrary);
+  document.getElementById('importContextsInput').addEventListener('change', handleImportContexts);
+}
+
+async function handleUsePagePrompt() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active tab');
+    await ensureContentScript(tab.id);
+    const response = await sendToContentScript(tab.id, { action: 'GET_ACTIVE_PROMPT_SOURCE' });
+    if (response?.status !== 'success') throw new Error(response?.error || 'Could not read page text');
+
+    if (response.selectedText) {
+      document.getElementById('promptSourceInput').value = response.selectedText;
+    } else if (response.activeText) {
+      document.getElementById('promptSourceInput').value = response.activeText;
+    } else {
+      throw new Error('Select text or focus a text box first');
+    }
+
+    const contextNotes = [];
+    if (response.pageTitle) contextNotes.push(`Page: ${response.pageTitle}`);
+    if (response.url) contextNotes.push(`URL: ${response.url}`);
+    if (response.editableLabel) contextNotes.push(`Field: ${response.editableLabel}`);
+    if (contextNotes.length) {
+      const existing = document.getElementById('promptContextInput').value.trim();
+      document.getElementById('promptContextInput').value = [existing, ...contextNotes].filter(Boolean).join('\n');
+    }
+    showToast('Loaded text from page', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function handleOptimizePrompt() {
+  const form = getPromptFormData();
+  if (!form.sourcePrompt) {
+    showToast('Add a source prompt first', 'warning');
+    return;
+  }
+
+  const settings = await StorageManager.getSettings();
+  const promptSettings = await StorageManager.getPromptSettings();
+  setStatus('Optimizing prompt...', 'loading');
+  const payload = {
+    source_prompt: form.sourcePrompt,
+    project_context: form.projectContext || null,
+    goal: form.title || null,
+    tone: form.tone || null,
+    output_format: form.outputFormat || null,
+    target_models: form.targetModels,
+    preserve_intent: promptSettings.preserveIntent !== false,
+  };
+
+  const selectedContextId = document.getElementById('contextSelect').value;
+  if (selectedContextId) {
+    const context = await StorageManager.getPromptContextById(selectedContextId);
+    if (context?.content) {
+      payload.extra_context = [{
+        context_id: context.id,
+        title: context.title,
+        content: context.content,
+        tags: context.tags || [],
+      }];
+    }
+  }
+
+  const response = await AIAssist.optimizePrompt(payload, settings.aiAssistUrl);
+  if (response.error) {
+    setStatus('Error: ' + response.error, 'error');
+    showToast(response.error, 'error');
+    return;
+  }
+
+  if (!document.getElementById('promptTitleInput').value.trim() && response.title) {
+    document.getElementById('promptTitleInput').value = response.title;
+  }
+  document.getElementById('optimizedPromptOutput').value = response.optimized_prompt || '';
+  renderPromptInsights({ improvements: response.improvements || [], warnings: response.warnings || [] });
+  document.getElementById('promptEvaluationPanel').innerHTML =
+    `<div class="prompt-eval-panel"><div class="prompt-item-body">${escapeHtml(response.summary || 'Optimized prompt ready.')}</div></div>`;
+  document.getElementById('promptResultMetrics').textContent =
+    `${response.latency_sec || 0}s • $${Number(response.cost_usd || 0).toFixed(6)}`;
+  promptEvaluationState = null;
+  setStatus('Optimized prompt ready', 'success');
+}
+
+async function handleEvaluatePrompt() {
+  const form = getPromptFormData();
+  const promptText = document.getElementById('optimizedPromptOutput').value.trim() || form.sourcePrompt;
+  if (!promptText) {
+    showToast('Add a prompt to evaluate first', 'warning');
+    return;
+  }
+
+  const settings = await StorageManager.getSettings();
+  setStatus('Evaluating prompt...', 'loading');
+  const payload = {
+    prompt: promptText,
+    project_context: form.projectContext || null,
+    intended_outcome: form.title || null,
+    target_models: form.targetModels,
+  };
+
+  const selectedContextId = document.getElementById('contextSelect').value;
+  if (selectedContextId) {
+    const context = await StorageManager.getPromptContextById(selectedContextId);
+    if (context?.content) {
+      payload.extra_context = [{
+        context_id: context.id,
+        title: context.title,
+        content: context.content,
+        tags: context.tags || [],
+      }];
+    }
+  }
+
+  const response = await AIAssist.evaluatePrompt(payload, settings.aiAssistUrl);
+  if (response.error) {
+    setStatus('Error: ' + response.error, 'error');
+    showToast(response.error, 'error');
+    return;
+  }
+
+  promptEvaluationState = response;
+  renderPromptEvaluation(response);
+  setStatus('Prompt evaluation ready', 'success');
+}
+
+function renderPromptEvaluation(response) {
+  const scores = response.dimension_scores || {};
+  const rows = Object.entries(scores).map(([key, value]) => `
+    <div class="score-row">
+      <span>${escapeHtml(key.replace(/_/g, ' '))}</span>
+      <div class="score-bar"><div class="score-bar-fill" style="width:${Math.max(0, Math.min(100, value))}%"></div></div>
+      <span>${Math.max(0, Math.min(100, value))}</span>
+    </div>
+  `).join('');
+
+  document.getElementById('promptEvaluationPanel').innerHTML = `
+    <div class="prompt-eval-panel">
+      <div class="prompt-score">
+        <span>Overall score</span>
+        <span class="prompt-score-value">${response.overall_score || 0}</span>
+      </div>
+      <div class="score-grid">${rows}</div>
+    </div>
+  `;
+  renderPromptInsights({
+    strengths: response.strengths || [],
+    weaknesses: response.weaknesses || [],
+    recommendations: response.recommendations || [],
+  });
+  document.getElementById('promptResultMetrics').textContent =
+    `${response.latency_sec || 0}s • $${Number(response.cost_usd || 0).toFixed(6)}`;
+  if (response.rewritten_excerpt && !document.getElementById('optimizedPromptOutput').value.trim()) {
+    document.getElementById('optimizedPromptOutput').value = response.rewritten_excerpt;
+  }
+}
+
+function renderPromptInsights({ improvements = [], warnings = [], strengths = [], weaknesses = [], recommendations = [] }) {
+  const sections = [
+    { title: 'Improvements', items: improvements },
+    { title: 'Warnings', items: warnings },
+    { title: 'Strengths', items: strengths },
+    { title: 'Weaknesses', items: weaknesses },
+    { title: 'Recommendations', items: recommendations },
+  ].filter(section => Array.isArray(section.items) && section.items.length > 0);
+
+  const container = document.getElementById('promptInsights');
+  if (sections.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = sections.map(section => `
+    <div class="insight-block">
+      <div class="insight-title">${escapeHtml(section.title)}</div>
+      <div class="insight-list">
+        ${section.items.map(item => `<div>${escapeHtml(String(item))}</div>`).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function handleCopyOptimizedPrompt() {
+  const text = document.getElementById('optimizedPromptOutput').value.trim();
+  if (!text) return showToast('No optimized prompt to copy', 'warning');
+  await navigator.clipboard.writeText(text);
+  showToast('Prompt copied', 'success');
+}
+
+async function handleApplyPromptToPage() {
+  const text = document.getElementById('optimizedPromptOutput').value.trim();
+  if (!text) return showToast('No optimized prompt to insert', 'warning');
+
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) throw new Error('No active tab');
+    await ensureContentScript(tab.id);
+    const response = await sendToContentScript(tab.id, { action: 'APPLY_ACTIVE_PROMPT_TEXT', value: text });
+    if (response?.status !== 'success') throw new Error(response?.error || 'Could not insert text');
+    showToast('Inserted into page', 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function handleSavePrompt() {
+  const form = getPromptFormData();
+  const optimizedPrompt = document.getElementById('optimizedPromptOutput').value.trim();
+  if (!form.sourcePrompt && !optimizedPrompt) return showToast('Nothing to save', 'warning');
+
+  const saved = await StorageManager.savePrompt({
+    id: currentEditingPromptId,
+    title: form.title || 'Untitled Prompt',
+    description: promptEvaluationState?.recommendations?.[0] || '',
+    promptText: form.sourcePrompt,
+    optimizedPrompt,
+    projectContext: form.projectContext,
+    tags: form.tags,
+    targetModels: form.targetModels,
+    source: optimizedPrompt ? 'optimized' : 'manual',
+  });
+  currentEditingPromptId = saved.id;
+  await renderPromptLibrary();
+  showToast('Prompt saved', 'success');
+}
+
+async function renderPromptLibrary() {
+  const query = document.getElementById('promptSearchInput')?.value || '';
+  const prompts = await StorageManager.searchPromptLibrary(query);
+  const container = document.getElementById('promptLibraryList');
+  const meta = document.getElementById('promptLibraryMeta');
+  meta.textContent = `${prompts.length} prompt${prompts.length === 1 ? '' : 's'}`;
+
+  if (prompts.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="es-icon">L</div>No saved prompts yet.</div>`;
+    return;
+  }
+
+  container.innerHTML = prompts.map(prompt => `
+    <div class="prompt-item">
+      <div class="prompt-item-header">
+        <div>
+          <div class="prompt-item-title">${escapeHtml(prompt.title || 'Untitled Prompt')}</div>
+          <div class="prompt-item-meta">${escapeHtml((prompt.targetModels || []).join(', ') || 'General')}</div>
+        </div>
+        <button class="pc-action-btn" data-action="delete" data-id="${prompt.id}">X</button>
+      </div>
+      <div class="chip-row">
+        ${(prompt.tags || []).map(tag => `<span class="tag-chip">${escapeHtml(tag)}</span>`).join('')}
+      </div>
+      <div class="prompt-item-body">${escapeHtml(truncate(prompt.optimizedPrompt || prompt.promptText || '', 220))}</div>
+      <div class="prompt-item-actions">
+        <button class="btn btn-ghost btn-sm" data-action="load" data-id="${prompt.id}">Load</button>
+        <button class="btn btn-ghost btn-sm" data-action="copy" data-id="${prompt.id}">Copy</button>
+        <button class="btn btn-ghost btn-sm" data-action="share" data-id="${prompt.id}">Share</button>
+      </div>
+    </div>
+  `).join('');
+
+  container.querySelectorAll('[data-action="load"]').forEach(btn => btn.addEventListener('click', () => loadPromptIntoEditor(btn.dataset.id)));
+  container.querySelectorAll('[data-action="copy"]').forEach(btn => btn.addEventListener('click', async () => {
+    const prompt = await StorageManager.getPromptById(btn.dataset.id);
+    const text = prompt?.optimizedPrompt || prompt?.promptText || '';
+    if (!text) return showToast('Prompt is empty', 'warning');
+    await navigator.clipboard.writeText(text);
+    showToast('Prompt copied', 'success');
+  }));
+  container.querySelectorAll('[data-action="share"]').forEach(btn => btn.addEventListener('click', async () => {
+    const prompt = await StorageManager.getPromptById(btn.dataset.id);
+    if (!prompt) return;
+    await navigator.clipboard.writeText(JSON.stringify(prompt, null, 2));
+    showToast('Prompt JSON copied for sharing', 'success');
+  }));
+  container.querySelectorAll('[data-action="delete"]').forEach(btn => btn.addEventListener('click', async () => {
+    await StorageManager.deletePrompt(btn.dataset.id);
+    if (currentEditingPromptId === btn.dataset.id) currentEditingPromptId = null;
+    await renderPromptLibrary();
+    showToast('Prompt deleted', 'info');
+  }));
+}
+
+async function loadPromptIntoEditor(id) {
+  const prompt = await StorageManager.getPromptById(id);
+  if (!prompt) return;
+  currentEditingPromptId = prompt.id;
+  document.getElementById('promptTitleInput').value = prompt.title || '';
+  document.getElementById('promptSourceInput').value = prompt.promptText || '';
+  document.getElementById('promptContextInput').value = prompt.projectContext || '';
+  document.getElementById('optimizedPromptOutput').value = prompt.optimizedPrompt || '';
+  document.getElementById('promptTagsInput').value = (prompt.tags || []).join(', ');
+  document.getElementById('promptModelsInput').value = (prompt.targetModels || []).join(', ');
+  showToast('Prompt loaded', 'success');
+}
+
+async function handleExportPromptLibrary() {
+  const json = await StorageManager.exportPromptLibrary();
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'formfiller_prompt_library.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function handleImportPromptLibrary(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    await StorageManager.importPromptLibrary(await file.text());
+    await renderPromptLibrary();
+    showToast('Prompt library imported', 'success');
+  } catch (err) {
+    showToast('Import failed: ' + err.message, 'error');
+  } finally {
+    e.target.value = '';
+  }
+}
+
+async function handleSaveContext() {
+  const title = document.getElementById('contextTitleInput').value.trim();
+  const content = document.getElementById('contextContentInput').value.trim();
+  const tags = parseCommaSeparated(document.getElementById('contextTagsInput').value);
+  if (!title || !content) return showToast('Context title and content are required', 'warning');
+
+  const saved = await StorageManager.savePromptContext({ id: currentEditingContextId, title, content, tags });
+  currentEditingContextId = saved.id;
+  await renderPromptContexts();
+  document.getElementById('contextSelect').value = saved.id;
+  showToast('Context saved', 'success');
+}
+
+async function renderPromptContexts() {
+  const contexts = await StorageManager.getPromptContexts();
+  const select = document.getElementById('contextSelect');
+  const list = document.getElementById('promptContextList');
+
+  select.innerHTML = '<option value="">No saved context selected</option>' + contexts.map(context =>
+    `<option value="${context.id}">${escapeHtml(context.title)}</option>`
+  ).join('');
+
+  if (contexts.length === 0) {
+    list.innerHTML = `<div class="empty-state"><div class="es-icon">C</div>No saved contexts yet.</div>`;
+    return;
+  }
+
+  list.innerHTML = contexts.map(context => `
+    <div class="prompt-item">
+      <div class="prompt-item-header">
+        <div>
+          <div class="prompt-item-title">${escapeHtml(context.title)}</div>
+          <div class="prompt-item-meta">${escapeHtml((context.tags || []).join(', '))}</div>
+        </div>
+        <button class="pc-action-btn" data-action="delete-context" data-id="${context.id}">X</button>
+      </div>
+      <div class="prompt-item-body">${escapeHtml(truncate(context.content, 180))}</div>
+      <div class="prompt-item-actions">
+        <button class="btn btn-ghost btn-sm" data-action="load-context" data-id="${context.id}">Load</button>
+        <button class="btn btn-ghost btn-sm" data-action="apply-context" data-id="${context.id}">Use</button>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('[data-action="load-context"]').forEach(btn => btn.addEventListener('click', async () => {
+    const context = await StorageManager.getPromptContextById(btn.dataset.id);
+    if (!context) return;
+    currentEditingContextId = context.id;
+    document.getElementById('contextTitleInput').value = context.title || '';
+    document.getElementById('contextContentInput').value = context.content || '';
+    document.getElementById('contextTagsInput').value = (context.tags || []).join(', ');
+    document.getElementById('contextSelect').value = context.id;
+    showToast('Context loaded', 'success');
+  }));
+  list.querySelectorAll('[data-action="apply-context"]').forEach(btn => btn.addEventListener('click', async () => {
+    const context = await StorageManager.getPromptContextById(btn.dataset.id);
+    if (!context) return;
+    document.getElementById('contextSelect').value = context.id;
+    document.getElementById('promptContextInput').value = context.content || '';
+    showToast('Context applied to prompt editor', 'success');
+  }));
+  list.querySelectorAll('[data-action="delete-context"]').forEach(btn => btn.addEventListener('click', async () => {
+    await StorageManager.deletePromptContext(btn.dataset.id);
+    if (currentEditingContextId === btn.dataset.id) clearContextEditor();
+    await renderPromptContexts();
+    showToast('Context deleted', 'info');
+  }));
+}
+
+async function handleContextSelect(e) {
+  const id = e.target.value;
+  if (!id) return;
+  const context = await StorageManager.getPromptContextById(id);
+  if (!context) return;
+  document.getElementById('promptContextInput').value = context.content || '';
+}
+
+function clearContextEditor() {
+  currentEditingContextId = null;
+  document.getElementById('contextTitleInput').value = '';
+  document.getElementById('contextTagsInput').value = '';
+  document.getElementById('contextContentInput').value = '';
+  document.getElementById('contextSelect').value = '';
+}
+
+async function handleExportContexts() {
+  const json = await StorageManager.exportPromptContexts();
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'formfiller_prompt_contexts.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function handleImportContexts(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  try {
+    await StorageManager.importPromptContexts(await file.text());
+    await renderPromptContexts();
+    showToast('Contexts imported', 'success');
+  } catch (err) {
+    showToast('Import failed: ' + err.message, 'error');
+  } finally {
+    e.target.value = '';
+  }
+}
+
+// SECTION 11: Document Upload (Preserved)
 // ═══════════════════════════════════════════════════════════════
 
 async function loadDocumentStatus() {

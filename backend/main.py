@@ -7,8 +7,15 @@ import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from .agent import analyze_form_request
-from .contracts import AnalyzeFieldsRequest, AnalyzeFieldsResponse
+from .agent import analyze_form_request, evaluate_prompt_request, optimize_prompt_request
+from .contracts import (
+    AnalyzeFieldsRequest,
+    AnalyzeFieldsResponse,
+    EvaluatePromptRequest,
+    EvaluatePromptResponse,
+    OptimizePromptRequest,
+    OptimizePromptResponse,
+)
 from .document_store import chunk_text, clear_storage, get_chunk_count, get_filename, is_cached, store_document
 from .normalization import normalize_request
 from .rag import embed_texts, retrieve_context_for_fields
@@ -113,6 +120,18 @@ async def analyze_fields_endpoint(request: AnalyzeFieldsRequest):
         debug=request.debug,
     )
     return response
+
+
+@app.post("/optimize-prompt", response_model=OptimizePromptResponse)
+async def optimize_prompt_endpoint(request: OptimizePromptRequest):
+    print("\n[API HIT] POST /optimize-prompt", flush=True)
+    return await optimize_prompt_request(request)
+
+
+@app.post("/evaluate-prompt", response_model=EvaluatePromptResponse)
+async def evaluate_prompt_endpoint(request: EvaluatePromptRequest):
+    print("\n[API HIT] POST /evaluate-prompt", flush=True)
+    return await evaluate_prompt_request(request)
 
 
 @app.delete("/clear-storage")
