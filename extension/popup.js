@@ -18,8 +18,10 @@
 let currentScanResults = null;
 let editingProfileId = null;
 let promptEvaluationState = null;
+let promptOptimizationState = null;
 let currentEditingPromptId = null;
 let currentEditingContextId = null;
+let currentPagePromptSource = null;
 const AI_REVIEW_CONFIDENCE_THRESHOLD = 88;
 const AI_MATCH_CONFIDENCE_THRESHOLD = 80;
 const AI_UNCERTAIN_CONFIDENCE_THRESHOLD = 55;
@@ -1604,6 +1606,68 @@ function getPromptFormData() {
   };
 }
 
+function mergePromptContext(existingValue, nextValue) {
+  const existing = String(existingValue || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+  const next = String(nextValue || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const merged = [];
+  const seen = new Set();
+  for (const line of [...existing, ...next]) {
+    const key = line.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(line);
+  }
+  return merged.join('\n');
+}
+
+function inferPromptKindForAssistant(text, conversationContext = []) {
+  const normalized = String(text || '').toLowerCase();
+  const followUpHints = [
+    'make it', 'same', 'this', 'that', 'above', 'earlier', 'continue', 'also',
+    'instead', 'rewrite', 'improve', 'shorter', 'longer', 'better',
+    'more detailed', 'more concise', 'simplify', 'expand',
+  ];
+  if (followUpHints.some(hint => normalized.includes(hint))) return 'follow_up';
+  if (Array.isArray(conversationContext) && conversationContext.length > 0) return 'follow_up';
+  return 'initial';
+}
+
+function buildPromptOptimizeConstraints(form) {
+  const constraints = [
+    'Keep the prompt concise and user-friendly.',
+    'Do not turn it into a long prompt template unless explicitly requested.',
+    'Preserve the original request and adapt it to the current conversation context.',
+    'For follow-up prompts, make references explicit so the prompt stands on its own.',
+  ];
+
+  if (!form.outputFormat) {
+    constraints.unshift('Return a direct rewrite of the prompt only, not a multi-section template.');
+  }
+
+  return constraints;
+}
+
+function renderPromptOptimizationSummary(response) {
+  const promptKind = response.prompt_kind === 'follow_up' ? 'Follow-up prompt' : 'Initial prompt';
+  const summary = response.summary || 'Optimized prompt ready.';
+  const explanation = response.explanation || '';
+
+  document.getElementById('promptEvaluationPanel').innerHTML = `
+    <div class="prompt-eval-panel">
+      <div class="prompt-item-meta">${escapeHtml(promptKind)}</div>
+      <div class="prompt-item-body">${escapeHtml(summary)}</div>
+      ${explanation ? `<div class="prompt-item-meta">${escapeHtml(explanation)}</div>` : ''}
+    </div>
+  `;
+}
+
 async function loadPromptWorkspace() {
   const promptSettings = await StorageManager.getPromptSettings();
   const modelsInput = document.getElementById('promptModelsInput');
@@ -1655,6 +1719,7 @@ async function handleUsePagePrompt() {
     await ensureContentScript(tab.id);
     const response = await sendToContentScript(tab.id, { action: 'GET_ACTIVE_PROMPT_SOURCE' });
     if (response?.status !== 'success') throw new Error(response?.error || 'Could not read page text');
+    currentPagePromptSource = response;
 
     if (response.selectedText) {
       document.getElementById('promptSourceInput').value = response.selectedText;
@@ -1664,13 +1729,9 @@ async function handleUsePagePrompt() {
       throw new Error('Select text or focus a text box first');
     }
 
-    const contextNotes = [];
-    if (response.pageTitle) contextNotes.push(`Page: ${response.pageTitle}`);
-    if (response.url) contextNotes.push(`URL: ${response.url}`);
-    if (response.editableLabel) contextNotes.push(`Field: ${response.editableLabel}`);
-    if (contextNotes.length) {
+    if (response.projectContext) {
       const existing = document.getElementById('promptContextInput').value.trim();
-      document.getElementById('promptContextInput').value = [existing, ...contextNotes].filter(Boolean).join('\n');
+      document.getElementById('promptContextInput').value = mergePromptContext(existing, response.projectContext);
     }
     showToast('Loaded text from page', 'success');
   } catch (err) {

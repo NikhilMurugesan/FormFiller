@@ -205,9 +205,46 @@ if (typeof window._ffProInitialized === 'undefined') {
     };
   }
 
+  function buildPromptProjectContext(source = {}) {
+    const lines = [];
+    const editableLabel = compactText(source.editableLabel, 120);
+
+    if (isChatGptPage()) {
+      lines.push(getChatGptConversationDescriptor());
+    } else {
+      const title = compactText(document.title, 120);
+      if (title) {
+        lines.push(`Source page: ${title}.`);
+      }
+    }
+
+    if (editableLabel && editableLabel.toLowerCase() !== 'chat with chatgpt') {
+      lines.push(`Focused input: ${editableLabel}`);
+    }
+
+    return lines.join('\n');
+  }
+
   function isChatGptPage() {
     const host = window.location.hostname.toLowerCase();
     return host === 'chatgpt.com' || host.endsWith('.chatgpt.com');
+  }
+
+  function getChatGptConversationDescriptor() {
+    const path = window.location.pathname || '';
+    const chatId = ((path.match(/\/c\/([^/?#]+)/i) || [])[1] || '').slice(0, 12);
+    const gptId = ((path.match(/\/g\/([^/?#]+)/i) || [])[1] || '').slice(0, 18);
+    const rawTitle = String(document.title || '')
+      .replace(/\s*[\-|:|]\s*ChatGPT\s*$/i, '')
+      .trim();
+    const title = compactText(rawTitle, 80);
+
+    if (title && chatId) return `ChatGPT chat "${title}" (${chatId}).`;
+    if (title && gptId) return `ChatGPT GPT "${title}" (${gptId}).`;
+    if (chatId) return `ChatGPT chat ${chatId}.`;
+    if (gptId) return `ChatGPT GPT ${gptId}.`;
+    if (title) return `ChatGPT chat "${title}".`;
+    return 'Current ChatGPT conversation.';
   }
 
   function isTravelGptContext() {
@@ -431,10 +468,7 @@ if (typeof window._ffProInitialized === 'undefined') {
     if (!sourceText) return showToast('Write something first', true);
 
     const sourceMeta = getPagePromptSource();
-    const context = [
-      isTravelGptContext() ? 'Travel planning conversation in ChatGPT.' : 'ChatGPT conversation.',
-      sourceMeta.editableLabel && sourceMeta.editableLabel !== 'Chat with ChatGPT' ? `Focused input: ${sourceMeta.editableLabel}` : '',
-    ].filter(Boolean).join('\n');
+    const context = buildPromptProjectContext(sourceMeta);
 
     const previousLabel = button.getAttribute('aria-label') || 'Enhance prompt';
     button.disabled = true;
@@ -1293,6 +1327,10 @@ if (typeof window._ffProInitialized === 'undefined') {
             sendResponse({
               status: 'success',
               ...source,
+              projectContext: buildPromptProjectContext(source) || null,
+              conversationContext: isChatGptPage() ? getChatGptConversationContext() : [],
+              isChatGptPage: isChatGptPage(),
+              isTravelContext: isTravelGptContext(),
               pageTitle: document.title,
               url: window.location.href,
             });
