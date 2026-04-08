@@ -833,16 +833,6 @@ If you plan to publish this more broadly, add:
 
 Those four additions will materially improve trust and conversion for GitHub visitors.
 
-## License
-
-**Replace this section with your actual license once you add a `LICENSE` file.**
-
-Suggested example:
-
-```text
-MIT License
-```
-
 ---
 
 Built for people who want their browser to do more useful work with less friction and more control.
