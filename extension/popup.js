@@ -17,6 +17,183 @@
 
 let currentScanResults = null;
 let editingProfileId = null;
+const AI_REVIEW_CONFIDENCE_THRESHOLD = 88;
+const AI_MATCH_CONFIDENCE_THRESHOLD = 80;
+const AI_UNCERTAIN_CONFIDENCE_THRESHOLD = 55;
+
+function compactText(value, maxLen = 220) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+  return text.length > maxLen ? text.slice(0, maxLen) : text;
+}
+
+function pruneNulls(value) {
+  if (Array.isArray(value)) {
+    return value.map(pruneNulls).filter(item => item !== null && item !== undefined);
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, raw] of Object.entries(value)) {
+      const pruned = pruneNulls(raw);
+      if (pruned === null || pruned === undefined) continue;
+      if (typeof pruned === 'string' && !pruned.trim()) continue;
+      if (Array.isArray(pruned) && pruned.length === 0) continue;
+      if (typeof pruned === 'object' && !Array.isArray(pruned) && Object.keys(pruned).length === 0) continue;
+      out[key] = pruned;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  }
+  return value;
+}
+
+function normalizeSourceForUi(source) {
+  if (!source) return 'ai';
+  if (source === 'domain_mapping') return 'domain';
+  if (source === 'cache' || source === 'learned') return 'learned';
+  if (source === 'deterministic' || source === 'profile') return 'profile';
+  return source;
+}
+
+function shouldSendFieldToBackend(mapping) {
+  if (!mapping) return false;
+  if (mapping.status === 'blocked' || mapping.fieldType === 'password') return false;
+  if (mapping.status === 'unmatched' || mapping.status === 'matched_no_value') return true;
+  return (mapping.confidence || 0) < AI_REVIEW_CONFIDENCE_THRESHOLD;
+}
+
+async function sendToBackground(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, response => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(response);
+      }
+    });
+  });
+}
+
+function buildAnalyzeRequest(scanResponse, targetMappings, tab, profile, settings, learnedEntries, domainMappings, actionName) {
+  const targetFieldIds = targetMappings.map(m => m.fieldId);
+  const pageContext = scanResponse.pageContext || {};
+  const formContext = scanResponse.formContext || {};
+
+  const learnedForDomain = (learnedEntries || [])
+    .filter(entry => entry.domain === pageContext.domain || entry.domain === '__global__')
+    .slice(0, 50)
+    .map(entry => pruneNulls({
+      domain: entry.domain,
+      page_type: entry.pageType || null,
+      field_label: entry.fieldLabel || null,
+      field_type: entry.fieldType || null,
+      field_name: entry.fieldName || null,
+      field_id: entry.fieldId || null,
+      field_intent: entry.fieldIntent || null,
+      value: entry.value,
+      confidence: entry.confidence || 0,
+      value_source: entry.valueSource || null,
+      usage_count: entry.usageCount || 0,
+      correction_count: entry.correctionCount || 0,
+    }));
+
+  const detectedFields = (scanResponse.detectedFields || [])
+    .map(field => pruneNulls({
+      field_id: field.fieldId,
+      field_name: field.fieldName,
+      label: field.label,
+      placeholder: field.placeholder,
+      aria_label: field.ariaLabel,
+      field_type: field.fieldType,
+      input_tag: field.inputTag,
+      current_value: field.currentValue,
+      candidate_options: (field.candidateOptions || []).map(opt => pruneNulls({
+        value: opt.value,
+        text: opt.text,
+        checked: opt.checked,
+        selected: opt.selected,
+        disabled: opt.disabled,
+      })),
+      nearby_text: field.nearbyText,
+      parent_section_text: field.parentSectionText,
+      section_heading: field.sectionHeading,
+      autocomplete: field.autocomplete,
+      required: !!field.required,
+      visible: field.visible !== false,
+      disabled: !!field.disabled,
+      css_selector: field.cssSelector,
+      normalized_intent: field.normalizedIntent,
+      form_id: field.formId,
+      form_name: field.formName,
+      form_action: field.formAction,
+      form_method: field.formMethod,
+      form_index: field.formIndex,
+    }));
+
+  return pruneNulls({
+    contract_version: '2026-04-08',
+    session_id: AIAssist.SESSION_ID,
+    debug: settings?.debugMode === true,
+    page: {
+      domain: pageContext.domain || (tab.url ? new URL(tab.url).hostname : null),
+      page_url: pageContext.pageUrl || tab.url || null,
+      page_title: pageContext.pageTitle || tab.title || null,
+      page_type: pageContext.pageType || scanResponse.formType?.type || null,
+    },
+    form: {
+      form_id: formContext.formId || null,
+      form_name: formContext.formName || null,
+      form_action: formContext.formAction || null,
+      form_method: formContext.formMethod || null,
+      form_type: formContext.formType || scanResponse.formType?.type || null,
+      section_heading: formContext.sectionHeading || null,
+      detected_field_count: formContext.detectedFieldCount || scanResponse.totalFields || detectedFields.length,
+    },
+    profile: {
+      profile_id: profile?.id || null,
+      profile_name: profile?.name || null,
+      data: profile?.data || {},
+    },
+    learned: {
+      domain_mappings: domainMappings || {},
+      entries: learnedForDomain,
+    },
+    user_action: {
+      action: actionName,
+      triggered_by: 'popup',
+      only_empty: false,
+    },
+    target_field_ids: targetFieldIds,
+    detected_fields: detectedFields,
+  });
+}
+
+function applyAnalyzeResponseToMappings(scanResponse, analyzeResponse) {
+  const suggestions = analyzeResponse?.suggestions || [];
+  for (const suggestion of suggestions) {
+    const target = scanResponse.mappings.find(m => m.fieldId === suggestion.field_id);
+    if (!target) continue;
+
+    target.detectedIntent = suggestion.detected_intent || target.detectedIntent || target.field?.normalizedIntent || 'unknown';
+    target.reason = suggestion.reason || target.reason || '';
+    target.matchSource = normalizeSourceForUi(suggestion.source);
+    target.backendStatus = suggestion.status || 'failed';
+    target.candidateAlternatives = suggestion.candidate_alternatives || [];
+    target.confidence = suggestion.confidence || 0;
+
+    if (suggestion.suggested_value !== null && suggestion.suggested_value !== undefined && suggestion.suggested_value !== '') {
+      target.value = suggestion.suggested_value;
+    }
+
+    if (suggestion.status === 'matched') {
+      target.status = 'matched';
+    } else if (suggestion.status === 'uncertain') {
+      target.status = 'uncertain';
+    } else if (suggestion.status === 'failed') {
+      target.status = target.status === 'matched' ? target.status : 'unmatched';
+    }
+  }
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
   // Initialize storage (seeds defaults on first run)
@@ -146,7 +323,7 @@ async function renderProfileDropdown() {
 function setupQuickActions() {
   document.getElementById('btnScan').addEventListener('click', handleScan);
   document.getElementById('btnAutofillAll').addEventListener('click', () => handleAutofill(false));
-  document.getElementById('btnAIAutofill').addEventListener('click', handleAIAutofill);
+  document.getElementById('btnAIAutofill').addEventListener('click', handleAIAutofillV2);
   document.getElementById('btnFillEmpty').addEventListener('click', () => handleAutofill(true));
   document.getElementById('btnClear').addEventListener('click', handleClear);
   document.getElementById('btnPreview').addEventListener('click', handleScan); // Same as scan
@@ -162,6 +339,7 @@ async function handleScan() {
     await ensureContentScript(tab.id);
 
     const profile = await StorageManager.getActiveProfile();
+    const settings = await StorageManager.getSettings();
     const domain = new URL(tab.url).hostname;
     const domainMappings = await StorageManager.getDomainMappings(domain);
 
@@ -169,6 +347,7 @@ async function handleScan() {
       action: 'SCAN_FORM',
       profileData: profile?.data || {},
       domainMappings,
+      debug: settings.debugMode === true,
     });
 
     if (response.status !== 'success') throw new Error(response.error || 'Scan failed');
@@ -272,6 +451,100 @@ async function handleAIAutofill() {
 
     setStatus(`✨ ${filled} fields filled with AI`, 'success');
     showToast(`${filled} fields filled!`, 'success');
+  } catch (err) {
+    setStatus('Error: ' + err.message, 'error');
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = origHtml;
+  }
+}
+
+async function handleAIAutofillV2() {
+  const btn = document.getElementById('btnAIAutofill');
+  const origHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="action-icon">⏳</span> AI Running...';
+
+  try {
+    const settings = await StorageManager.getSettings();
+    if (!settings.aiAssistEnabled) {
+      throw new Error('AI Assist is disabled in Settings tab.');
+    }
+
+    setStatus('Scanning form and building backend request...', 'loading');
+
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error('No active tab');
+    await ensureContentScript(tab.id);
+
+    const profile = await StorageManager.getActiveProfile();
+    const learnedEntries = await StorageManager.getLearnedMemory();
+    const domain = new URL(tab.url).hostname;
+    const domainMappings = await StorageManager.getDomainMappings(domain);
+
+    const scanResponse = await sendToContentScript(tab.id, {
+      action: 'SCAN_FORM',
+      profileData: profile?.data || {},
+      domainMappings,
+      debug: settings.debugMode === true,
+    });
+
+    if (scanResponse.status !== 'success') throw new Error(scanResponse.error || 'Scan failed');
+
+    const aiTargets = scanResponse.mappings.filter(shouldSendFieldToBackend);
+    if (aiTargets.length > 0) {
+      const analyzeRequest = buildAnalyzeRequest(
+        scanResponse,
+        aiTargets,
+        tab,
+        profile,
+        settings,
+        learnedEntries,
+        domainMappings,
+        'bulk_ai_autofill'
+      );
+
+      const aiResponse = await sendToBackground({
+        action: 'ANALYZE_FIELDS',
+        request: analyzeRequest,
+      });
+
+      if (aiResponse?.error) {
+        throw new Error('AI Request failed: ' + aiResponse.error);
+      }
+
+      applyAnalyzeResponseToMappings(scanResponse, aiResponse);
+    }
+
+    currentScanResults = scanResponse;
+    renderScanResults(scanResponse);
+    setStatus('Backend suggestions ready. High-confidence results will autofill; uncertain ones stay in review.', 'success');
+
+    const fillResponse = await sendToContentScript(tab.id, {
+      action: 'APPLY_MAPPINGS',
+      mappings: scanResponse.mappings,
+      profileData: profile?.data || {},
+      domainMappings,
+    });
+
+    if (fillResponse.status !== 'success') throw new Error(fillResponse.error || 'Fill failed');
+
+    const filled = fillResponse.filled?.length || 0;
+    const total = scanResponse.totalFields;
+
+    renderFillResults(fillResponse);
+    showProgress(filled, total);
+
+    chrome.runtime.sendMessage({
+      action: 'UPDATE_BADGE',
+      tabId: tab.id,
+      text: filled > 0 ? String(filled) : '',
+      color: '#7c3aed',
+    });
+
+    setStatus(`✨ ${filled} fields filled with backend suggestions`, 'success');
+    showToast(`${filled} fields filled`, 'success');
   } catch (err) {
     setStatus('Error: ' + err.message, 'error');
     showToast(err.message, 'error');
@@ -420,11 +693,11 @@ function renderFieldList(mappings, blocked) {
 
   list.innerHTML = mappings.map(m => {
     const conf = m.confidence || 0;
-    const confClass = conf >= 80 ? 'high' : conf >= 50 ? 'medium' : 'low';
-    const statusClass = m.status === 'matched' ? confClass : 'blocked';
+    const confClass = conf >= AI_MATCH_CONFIDENCE_THRESHOLD ? 'high' : conf >= AI_UNCERTAIN_CONFIDENCE_THRESHOLD ? 'medium' : 'low';
+    const statusClass = m.status === 'matched' ? confClass : m.status === 'uncertain' ? 'medium' : 'blocked';
     const valueStr = m.value !== undefined && m.value !== null ? String(m.value) : '';
     const displayValue = valueStr ? truncate(valueStr, 20) : '—';
-    const profileKey = m.profileKey || m.reason || 'unmatched';
+    const descriptor = m.profileKey || m.detectedIntent || m.reason || 'unmatched';
     
     // Icon based on source
     let sourceIcon = '🤖';
@@ -434,6 +707,10 @@ function renderFieldList(mappings, blocked) {
     else if (m.matchSource === 'ai') sourceIcon = '✨';
     else if (m.matchSource === 'decision') sourceIcon = '⚙️';
 
+    if (m.matchSource === 'deterministic') sourceIcon = '👤';
+    if (m.matchSource === 'cache') sourceIcon = '🧠';
+    if (m.matchSource === 'rag') sourceIcon = '✨';
+
     return `
       <div class="field-row" style="flex-direction:column;align-items:stretch;gap:8px" data-field-id="${m.fieldId}">
         <div style="display:flex;align-items:center;width:100%;gap:8px;">
@@ -442,10 +719,15 @@ function renderFieldList(mappings, blocked) {
             <div class="fr-name" title="${m.fieldLabel}">${truncate(m.fieldLabel, 28)}</div>
             <div class="fr-match" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
               <span title="Source">${sourceIcon}</span>
-              ${m.status === 'matched' ? `<span>${profileKey}</span>` : `<span style="color:var(--error)">Unmatched</span>`}
+              ${m.status === 'matched'
+                ? `<span>${escapeHtml(descriptor)}</span>`
+                : m.status === 'uncertain'
+                  ? `<span style="color:var(--warning)">Review: ${escapeHtml(descriptor)}</span>`
+                  : `<span style="color:var(--error)">Unmatched</span>`}
             </div>
+            ${m.reason ? `<div class="fr-match" style="font-size:10px;color:var(--text-muted);margin-top:2px;">${escapeHtml(truncate(m.reason, 70))}</div>` : ''}
           </div>
-          ${m.status === 'matched' ? `<div class="fr-value" style="flex:1;text-align:right;" title="${escapeHtml(valueStr)}">${escapeHtml(displayValue)}</div>` : ''}
+          ${(m.status === 'matched' || m.status === 'uncertain') ? `<div class="fr-value" style="flex:1;text-align:right;" title="${escapeHtml(valueStr)}">${escapeHtml(displayValue)}</div>` : ''}
           ${conf > 0 ? `<span class="fr-confidence ${confClass}" style="margin:0;">${conf}%</span>` : ''}
         </div>
         <div class="fr-actions" style="display:flex;gap:4px;align-self:flex-end;">
@@ -523,34 +805,49 @@ function renderFieldList(mappings, blocked) {
     btn.addEventListener('click', async () => {
       const fieldId = btn.dataset.id;
       const target = mappings.find(m => m.fieldId === fieldId);
-      if (!target) return;
+      if (!target || !currentScanResults) return;
       
       btn.textContent = '⏳';
       try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab) throw new Error('No active tab');
         const profile = await StorageManager.getActiveProfile();
         const settings = await StorageManager.getSettings();
-        const aiResponse = await AIAssist.analyzeFields(
-          [{ id: target.fieldId, name: target.fieldName, label: target.fieldLabel, type: target.fieldType }],
-          profile?.data || {},
-          settings.aiAssistUrl
+        const learnedEntries = await StorageManager.getLearnedMemory();
+        const domain = new URL(tab.url).hostname;
+        const domainMappings = await StorageManager.getDomainMappings(domain);
+        const analyzeRequest = buildAnalyzeRequest(
+          currentScanResults,
+          [target],
+          tab,
+          profile,
+          settings,
+          learnedEntries,
+          domainMappings,
+          'single_field_review'
         );
+        const aiResponse = await sendToBackground({
+          action: 'ANALYZE_FIELDS',
+          request: analyzeRequest,
+        });
 
-        if (aiResponse.mappings && aiResponse.mappings[0] && aiResponse.mappings[0].value) {
-          target.value = aiResponse.mappings[0].value;
-          target.status = 'matched';
-          target.confidence = aiResponse.mappings[0].confidence || 90;
-          target.matchSource = 'ai';
-          target.reason = aiResponse.mappings[0].reason || 'AI prediction manual request';
-          
-          // Re-render and auto-fill
-          renderFieldList(mappings, blocked);
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (aiResponse?.error) {
+          throw new Error(aiResponse.error);
+        }
+
+        applyAnalyzeResponseToMappings(currentScanResults, aiResponse);
+        renderFieldList(mappings, blocked);
+
+        if (target.status === 'matched' && target.value !== null && target.value !== undefined && target.value !== '') {
           await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: target.value });
-          showToast('AI filled', 'success');
+          showToast('Backend suggestion filled', 'success');
+        } else if (target.status === 'uncertain') {
+          showToast('Suggestion marked for review', 'warning');
         } else {
-          showToast('AI returned null or no match', 'warning');
+          showToast('No confident suggestion found', 'warning');
           btn.textContent = 'AI Predict';
         }
+        return;
       } catch (err) {
         showToast(err.message, 'error');
         btn.textContent = 'AI Predict';

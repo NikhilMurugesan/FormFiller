@@ -1,37 +1,39 @@
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
-from pydantic import BaseModel
-import uvicorn
+from __future__ import annotations
+
 import io
+from typing import Optional
 
-from .agent import analyze_form_fields, FormField, AnalyzeResponse
-from .document_store import (
-    chunk_text, store_document, get_filename,
-    get_chunk_count, is_cached, clear_storage
-)
-from .rag import embed_texts, retrieve_relevant_chunks
+import uvicorn
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 
-# ---- File Parsers ----
+from .agent import analyze_form_request
+from .contracts import AnalyzeFieldsRequest, AnalyzeFieldsResponse
+from .document_store import chunk_text, clear_storage, get_chunk_count, get_filename, is_cached, store_document
+from .normalization import normalize_request
+from .rag import embed_texts, retrieve_context_for_fields
+
+
 def extract_text_from_pdf(file_bytes: bytes) -> str:
     try:
         import PyPDF2
+
         reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         return "".join(page.extract_text() or "" for page in reader.pages).strip()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse PDF: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse PDF: {exc}") from exc
 
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
     try:
         from docx import Document
+
         doc = Document(io.BytesIO(file_bytes))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip()).strip()
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to parse DOCX: {e}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse DOCX: {exc}") from exc
 
 
-# ---- FastAPI App ----
 app = FastAPI(title="AI Form Filler Backend")
 
 app.add_middleware(
@@ -43,12 +45,6 @@ app.add_middleware(
 )
 
 
-class AnalyzeRequest(BaseModel):
-    fields: List[FormField]
-    session_id: Optional[str] = "default"
-    user_data: Optional[dict] = None
-
-
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "AI Form Filler Backend is running"}
@@ -56,27 +52,16 @@ def read_root():
 
 @app.get("/document-status")
 def document_status(session_id: str = "default"):
-    """Check if a document is already embedded in the backend cache."""
     cached = is_cached(session_id)
     return {
         "cached": cached,
         "filename": get_filename(session_id) if cached else None,
-        "chunk_count": get_chunk_count(session_id) if cached else 0
+        "chunk_count": get_chunk_count(session_id) if cached else 0,
     }
 
 
 @app.post("/upload-document")
-async def upload_document(
-    file: UploadFile = File(...),
-    session_id: str = Form(default="default")
-):
-    """
-    Upload PDF or DOCX:
-    1. Extract text
-    2. Chunk the text
-    3. Embed ALL chunks via Gemini Embeddings (done ONCE and cached)
-    4. Return metadata (filename + chunk count) — NOT the chunks themselves
-    """
+async def upload_document(file: UploadFile = File(...), session_id: str = Form(default="default")):
     print(f"\n[API HIT] POST /upload-document | File: {file.filename}", flush=True)
 
     filename = file.filename or "document"
@@ -93,42 +78,40 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Could not extract readable text.")
 
     chunks = chunk_text(text)
-    print(f"[Upload] '{filename}' → {len(chunks)} chunks. Embedding now...")
-
-    # Embed all chunks and store with vectors — expensive only once
     embeddings = await embed_texts(chunks)
     store_document(session_id, filename, chunks, embeddings)
-
-    print(f"[Upload] Embeddings cached for session '{session_id}'")
 
     return {
         "filename": filename,
         "chunk_count": len(chunks),
         "session_id": session_id,
-        "status": "embedded_and_cached"
+        "status": "embedded_and_cached",
     }
 
 
-@app.post("/analyze-fields", response_model=AnalyzeResponse)
-async def analyze_fields_endpoint(request: AnalyzeRequest):
-    """
-    Analyze form fields:
-    1. Build a query from field labels/names
-    2. Retrieve ONLY the top-K relevant chunks using RAG (cosine similarity)
-    3. Pass those chunks to Gemini for mapping — minimal tokens used
-    """
-    print(f"\n[API HIT] POST /analyze-fields | Fields received: {len(request.fields)}", flush=True)
+@app.post("/analyze-fields", response_model=AnalyzeFieldsResponse)
+async def analyze_fields_endpoint(request: AnalyzeFieldsRequest):
+    print(
+        f"\n[API HIT] POST /analyze-fields | Fields received: {len(request.detected_fields)} | Targets: {len(request.target_field_ids)}",
+        flush=True,
+    )
 
-    session_id = request.session_id or "default"
+    normalized = normalize_request(request)
+    print(
+        f"[Normalize] Domain={normalized['page'].get('domain')} | FormType={normalized['form'].get('form_type')} | "
+        f"TargetFieldIds={[field['field_id'] for field in normalized['target_fields']]}",
+        flush=True,
+    )
 
-    # RAG: retrieve only relevant chunks — no chunks sent if no doc uploaded
-    relevant_chunks = []
-    if is_cached(session_id):
-        fields_as_dicts = [f.model_dump() for f in request.fields]
-        relevant_chunks = await retrieve_relevant_chunks(session_id, fields_as_dicts)
-        print(f"[RAG] Using {len(relevant_chunks)} chunk(s) for this request.")
+    retrieval_context = {}
+    if is_cached(request.session_id):
+        retrieval_context = await retrieve_context_for_fields(request.session_id, normalized["target_fields"])
 
-    response = await analyze_form_fields(request.fields, relevant_chunks, request.user_data)
+    response = await analyze_form_request(
+        normalized_context=normalized,
+        retrieval_context=retrieval_context,
+        debug=request.debug,
+    )
     return response
 
 

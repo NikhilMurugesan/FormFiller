@@ -25,6 +25,12 @@ function storageSet(data) {
   });
 }
 
+function bgDebug(enabled, ...args) {
+  if (enabled) {
+    console.log('[FormFiller Debug][BG]', ...args);
+  }
+}
+
 // ═══════════════════════════════════════════════════════════════
 // SECTION 2: Context Menu
 // ═══════════════════════════════════════════════════════════════
@@ -121,22 +127,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         // ── AI Assist (proxy API call from content script) ───
         case 'ANALYZE_FIELDS': {
           // Legacy: forward to backend API
-          const userData = await storageGet('ff_user_data');
           const settings = await storageGet('ff_settings');
           const apiUrl = (settings?.aiAssistUrl || 'https://form-filler-pi.vercel.app') + '/analyze-fields';
+          const payload = request.request || {
+            fields: request.fields || [],
+            session_id: request.session_id || 'formfiller_session',
+            user_data: request.user_data || await storageGet('ff_user_data') || null,
+          };
+          const debug = payload?.debug === true || settings?.debugMode === true;
 
           try {
+            bgDebug(debug, 'Sending analyze payload', payload);
             const res = await fetch(apiUrl, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                fields: request.fields,
-                session_id: request.session_id || 'formfiller_session',
-                user_data: request.user_data || userData || null,
-              }),
+              body: JSON.stringify(payload),
             });
-            if (!res.ok) throw new Error(`API Error: ${res.status}`);
+            if (!res.ok) {
+              const errorText = await res.text();
+              throw new Error(`API Error: ${res.status} ${errorText || res.statusText}`);
+            }
             const data = await res.json();
+            bgDebug(debug, 'Received analyze response', data);
             sendResponse(data);
           } catch (err) {
             console.error('[FormFiller BG] API Error:', err);

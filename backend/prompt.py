@@ -1,65 +1,62 @@
 import json
+from typing import Any, Dict, List
 
-# STATIC system prompt — never changes, never contains documents or user data.
-# This is cached by Gemini and costs nearly nothing to repeat.
-SYSTEM_PROMPT = """You are a form-filling AI minimizing token usage. 
-Map fields to the best profile value. 
+
+SYSTEM_PROMPT = """You map browser form fields to the best user value.
+Use the field label, placeholder, nearby text, section heading, options, page/form context, learned hints, profile data, and resume snippets.
 Rules:
-1. Provide extremely concise answers. DO NOT write paragraphs.
-2. For sensitive fields (SSN, credit card, passwords) return null.
-3. For select/dropdowns, return the exact option value.
-4. Estimate confidence (0-100) based on how well the profile data matches the field label/intent.
-5. Provide a short 3-5 word reason for the decision.
+1. Never invent values absent from profile, learned hints, or resume context.
+2. Skip sensitive fields such as passwords, SSN, credit card, OTP, CVV.
+3. For select/radio/checkbox fields, suggested_value must exactly match one option text or option value.
+4. status must be one of matched, uncertain, failed, skipped.
+5. confidence is 0-100.
+6. source must be one of rag, learned, profile, deterministic, failed.
 
-Respond EXCLUSIVELY with this JSON:
-{"mappings":[{"field_id":"<id>","value":"<short value or null>","confidence":85,"reason":"<brief explanation>","source":"ai"}]}"""
+Respond only as JSON:
+{"suggestions":[{"field_id":"...","detected_intent":"...","suggested_value":"...","source":"rag","confidence":84,"reason":"short reason","status":"matched","candidate_alternatives":["..."]}]}"""
 
 
-def build_compact_user_message(user_data: dict, fields: list, doc_chunks: list) -> str:
-    """
-    Build a minimal, token-efficient user message.
+def _trim_value(value: Any, max_len: int = 220) -> Any:
+    if isinstance(value, str):
+        return value[:max_len]
+    if isinstance(value, list):
+        return [_trim_value(item, max_len=max_len) for item in value[:10]]
+    if isinstance(value, dict):
+        return {key: _trim_value(item, max_len=max_len) for key, item in list(value.items())[:40]}
+    return value
 
-    Optimizations:
-    1. Strip None / empty values from user_data before serializing
-    2. Compress skills list to a single comma-separated string
-    3. Document chunks injected here (NOT in system prompt) so they're
-       only part of the USER turn — no repeated overhead
-    4. Field metadata stripped down (remove null keys)
-    """
-    # 1. Strip empty values & aggressively format lengths to prevent token exhaustion
-    clean_profile = {}
-    for k, v in user_data.items():
-        if v in (None, "", [], {}):
-            continue
-        if isinstance(v, list):
-            # Cap array items to prevent token-heavy massive skill lists
-            clean_profile[k] = ", ".join([str(i) for i in v[:15]])
-        elif isinstance(v, str):
-            # Cap string properties to ~150 chars max
-            clean_profile[k] = v[:150]
-        else:
-            clean_profile[k] = v
 
-    # 3. Compress fields — remove keys whose value is None
-    compact_fields = []
-    for f in fields:
-        cf = {k: v for k, v in f.items() if v is not None}
-        compact_fields.append(cf)
-
-    # 4. Build message — doc context goes here, not in system prompt
-    parts = {
-        "profile": clean_profile,
-        "fields": compact_fields
+def build_user_message(
+    profile_data: Dict[str, Any],
+    normalized_context: Dict[str, Any],
+    llm_fields: List[Dict[str, Any]],
+    retrieval_context: Dict[str, Dict[str, Any]],
+) -> str:
+    payload = {
+        "page": normalized_context["page"],
+        "form": normalized_context["form"],
+        "profile": _trim_value(profile_data, 180),
+        "fields": [],
     }
-    
-    if doc_chunks:
-        # Trim each chunk and cap total doc context characters to keep tokens low
-        trimmed = [c[:400] for c in doc_chunks[:3]]
-        parts["resume_context"] = " | ".join(trimmed)
-    else:
-        # Provide fallback natural language to stabilize Gemini preview models.
-        # Preview models frequently throw 503 UNAVAILABLE if the input contains ONLY
-        # dense JSON dictionaries without human-readable conversational context.
-        parts["resume_context"] = "No additional resume document provided. Please rely exclusively on the profile data above."
 
-    return json.dumps(parts, separators=(',', ':'))  # compact JSON = fewer tokens
+    for field in llm_fields:
+        retrieval = retrieval_context.get(field["field_id"], {})
+        payload["fields"].append(
+            {
+                "field_id": field["field_id"],
+                "label": field.get("label"),
+                "placeholder": field.get("placeholder"),
+                "aria_label": field.get("aria_label"),
+                "field_type": field.get("field_type"),
+                "input_tag": field.get("input_tag"),
+                "detected_intent": field.get("intent"),
+                "query": field.get("query"),
+                "nearby_text": field.get("nearby_text"),
+                "section_heading": field.get("section_heading"),
+                "parent_section_text": field.get("parent_section_text"),
+                "candidate_options": field.get("candidate_options", [])[:8],
+                "resume_context": retrieval.get("context_text"),
+            }
+        )
+
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=True)

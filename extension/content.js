@@ -21,6 +21,123 @@ if (typeof window._ffProInitialized === 'undefined') {
   let _fabElement = null;
   let _fabMenuElement = null;
   let _isProcessing = false;
+  let _debugMode = false;
+
+  function debugLog(...args) {
+    if (_debugMode) {
+      console.log('[FormFiller Debug][Content]', ...args);
+    }
+  }
+
+  function compactText(value, maxLen = 220) {
+    if (value === null || value === undefined) return null;
+    const text = String(value).replace(/\s+/g, ' ').trim();
+    if (!text) return null;
+    return text.length > maxLen ? text.slice(0, maxLen) : text;
+  }
+
+  function pruneNulls(value) {
+    if (Array.isArray(value)) {
+      return value.map(pruneNulls).filter(item => item !== null && item !== undefined);
+    }
+    if (value && typeof value === 'object') {
+      const out = {};
+      for (const [key, raw] of Object.entries(value)) {
+        const pruned = pruneNulls(raw);
+        if (pruned === null || pruned === undefined) continue;
+        if (typeof pruned === 'string' && !pruned.trim()) continue;
+        if (Array.isArray(pruned) && pruned.length === 0) continue;
+        if (typeof pruned === 'object' && !Array.isArray(pruned) && Object.keys(pruned).length === 0) continue;
+        out[key] = pruned;
+      }
+      return Object.keys(out).length > 0 ? out : null;
+    }
+    return value;
+  }
+
+  function serializeField(field) {
+    return pruneNulls({
+      fieldId: field.id,
+      fieldName: field.name,
+      label: field.label || field.placeholder || field.name || field.id,
+      placeholder: compactText(field.placeholder),
+      ariaLabel: compactText(field.ariaLabel),
+      fieldType: field.type,
+      inputTag: field.inputTag || field.tagName,
+      currentValue: field.currentValue,
+      candidateOptions: field.candidateOptions || field.options || [],
+      nearbyText: compactText(field.nearbyText || field.surroundingText),
+      parentSectionText: compactText(field.parentSectionText, 320),
+      sectionHeading: compactText(field.sectionHeading),
+      autocomplete: field.autocomplete,
+      required: !!field.required,
+      visible: field.visible !== false,
+      disabled: !!field.disabled,
+      cssSelector: field.cssSelector,
+      normalizedIntent: field.normalizedIntent || 'unknown',
+      formId: field.formId,
+      formName: field.formName,
+      formAction: field.formAction,
+      formMethod: field.formMethod,
+      formIndex: field.formIndex,
+    });
+  }
+
+  function buildPageContext(formType, totalFields) {
+    return {
+      domain: DomainIntelligence.getDomain(),
+      pageUrl: window.location.href,
+      pageTitle: document.title,
+      pageType: formType?.type || null,
+      formCount: FieldDetector.countForms(),
+      detectedFieldCount: totalFields,
+    };
+  }
+
+  function buildPrimaryFormContext(fields, formType) {
+    if (!fields || fields.length === 0) return null;
+    const ranked = new Map();
+    for (const field of fields) {
+      const key = `${field.formId || 'no-form'}::${field.formIndex ?? 'x'}`;
+      if (!ranked.has(key)) {
+        ranked.set(key, { count: 0, sample: field });
+      }
+      ranked.get(key).count += 1;
+    }
+    const primary = [...ranked.values()].sort((a, b) => b.count - a.count)[0]?.sample;
+    if (!primary) return null;
+
+    return pruneNulls({
+      formId: primary.formId,
+      formName: primary.formName,
+      formAction: primary.formAction,
+      formMethod: primary.formMethod,
+      formIndex: primary.formIndex,
+      formType: formType?.type || null,
+      sectionHeading: primary.sectionHeading || null,
+      detectedFieldCount: fields.length,
+    });
+  }
+
+  function serializeMapping(mapping) {
+    const field = serializeField(mapping.field);
+    return pruneNulls({
+      fieldId: mapping.field.id,
+      fieldName: mapping.field.name,
+      fieldLabel: mapping.field.label || mapping.field.placeholder || mapping.field.name || mapping.field.id,
+      fieldType: mapping.field.type,
+      inputTag: mapping.field.inputTag || mapping.field.tagName,
+      profileKey: mapping.match?.profileKey || null,
+      value: mapping.value,
+      confidence: mapping.match?.confidence || 0,
+      matchSource: mapping.match?.matchSource || null,
+      status: mapping.status,
+      required: !!mapping.field.required,
+      options: mapping.field.options || [],
+      field,
+      detectedIntent: mapping.field.normalizedIntent || 'unknown',
+    });
+  }
 
   // ═══════════════════════════════════════════════════════════
   // SECTION 1: Floating Action Button (FAB)
@@ -388,42 +505,47 @@ if (typeof window._ffProInitialized === 'undefined') {
   chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const handler = async () => {
       try {
+        if (typeof request.debug === 'boolean') {
+          _debugMode = request.debug;
+        }
         switch (request.action) {
           case 'SCAN_FORM': {
             const result = await performScan(
               request.profileData || {},
               request.domainMappings || {}
             );
-            // Serialize results — can't send DOM elements
-            sendResponse({
+            const pageContext = buildPageContext(result.formType, result.totalFields);
+            const formContext = buildPrimaryFormContext(result.safe, result.formType);
+            const response = {
               status: 'success',
+              scanId: `scan_${Date.now()}`,
+              pageContext,
+              formContext,
               formType: result.formType,
               totalFields: result.totalFields,
               matchedCount: result.matchedCount,
               unmatchedCount: result.unmatchedCount,
               blockedCount: result.blockedCount,
-              mappings: result.mappings.map(m => ({
-                fieldId: m.field.id,
-                fieldName: m.field.name,
-                fieldLabel: m.field.label || m.field.placeholder || m.field.name || m.field.id,
-                fieldType: m.field.type,
-                profileKey: m.match?.profileKey || null,
-                value: m.value,
-                confidence: m.match?.confidence || 0,
-                matchSource: m.match?.matchSource || null,
-                status: m.status,
-                required: m.field.required,
-                options: m.field.options,
-              })),
+              detectedFields: result.safe.map(serializeField),
+              mappings: result.mappings.map(serializeMapping),
               blocked: result.blocked.map(b => ({
                 fieldId: b.field.id,
                 fieldLabel: b.field.label || b.field.name || b.field.id,
                 reason: b.reason,
+                field: serializeField(b.field),
               })),
-              domain: DomainIntelligence.getDomain(),
-              url: window.location.href,
-              pageTitle: document.title,
-            });
+              domain: pageContext.domain,
+              url: pageContext.pageUrl,
+              pageTitle: pageContext.pageTitle,
+              debug: request.debug ? {
+                pageContext,
+                formContext,
+                detectedFieldCount: result.safe.length,
+              } : null,
+            };
+            _lastScanResults = response;
+            debugLog('Scan response prepared', response);
+            sendResponse(response);
             break;
           }
 
@@ -669,6 +791,7 @@ if (typeof window._ffProInitialized === 'undefined') {
       console.log('[FormFiller] Could not contact background script');
       return;
     }
+    _debugMode = response?.settings?.debugMode === true;
     if (response?.settings?.showFab !== false) {
       if (document.body) {
         createFAB();
@@ -689,4 +812,3 @@ if (typeof window._ffProInitialized === 'undefined') {
   console.log('[FormFiller Pro] Content script initialized (v2.1 w/ learning)');
 
 } // end guard
-

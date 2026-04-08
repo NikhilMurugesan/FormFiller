@@ -39,7 +39,7 @@ def store_document(session_id: str, filename: str, chunks: List[str], embeddings
     }
 
 
-def retrieve_chunks(session_id: str, query_embedding: List[float], top_k: int = TOP_K) -> List[str]:
+def retrieve_ranked_chunks(session_id: str, query_embedding: List[float], top_k: int = TOP_K) -> List[Dict]:
     """
     Given a query embedding, return the top-k most relevant chunks
     using cosine similarity against the cached chunk embeddings.
@@ -59,7 +59,18 @@ def retrieve_chunks(session_id: str, query_embedding: List[float], top_k: int = 
 
     # Pick top-k indices
     top_indices = np.argsort(scores)[::-1][:top_k]
-    return [entry["chunks"][i] for i in top_indices]
+    return [
+        {
+            "chunk": entry["chunks"][i],
+            "score": float(scores[i]),
+            "rank": rank + 1,
+        }
+        for rank, i in enumerate(top_indices)
+    ]
+
+
+def retrieve_chunks(session_id: str, query_embedding: List[float], top_k: int = TOP_K) -> List[str]:
+    return [item["chunk"] for item in retrieve_ranked_chunks(session_id, query_embedding, top_k=top_k)]
 
 
 def get_filename(session_id: str) -> str:

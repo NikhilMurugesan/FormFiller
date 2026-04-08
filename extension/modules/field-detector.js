@@ -17,6 +17,7 @@
 var FieldDetector = FieldDetector || (() => {
 
   let _idCounter = 0;
+  const TEXT_LIMIT = 180;
 
   // ─── Visibility Check ────────────────────────────────────────
   function isVisible(el) {
@@ -102,22 +103,97 @@ var FieldDetector = FieldDetector || (() => {
     return null;
   }
 
-  // ─── Surrounding Text ────────────────────────────────────────
-  function getSurroundingText(el) {
-    const texts = [];
+  function cleanText(value, maxLen = TEXT_LIMIT) {
+    if (!value || typeof value !== 'string') return null;
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (!cleaned) return null;
+    return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
+  }
 
-    // Check heading above the field
-    const container = el.closest('div, fieldset, section, li, td');
-    if (container) {
-      const heading = container.querySelector('h1, h2, h3, h4, h5, h6, legend, .heading');
-      if (heading) texts.push(heading.innerText.trim());
+  function uniqueTexts(values, maxItems = 4, maxLen = TEXT_LIMIT) {
+    const seen = new Set();
+    const results = [];
+    for (const value of values) {
+      const text = cleanText(value, maxLen);
+      if (!text) continue;
+      const key = text.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      results.push(text);
+      if (results.length >= maxItems) break;
+    }
+    return results;
+  }
 
-      // Check for description/help text
-      const helpText = container.querySelector('.help-text, .description, .hint, small, .form-text');
-      if (helpText) texts.push(helpText.innerText.trim());
+  function buildStableSelector(el) {
+    if (el.id) return `#${el.id}`;
+
+    const parts = [el.tagName.toLowerCase()];
+    if (el.name) parts.push(`[name="${el.name}"]`);
+    if (el.type) parts.push(`[type="${el.type}"]`);
+
+    if (!el.name && el.parentElement) {
+      const siblings = Array.from(el.parentElement.children).filter(child => child.tagName === el.tagName);
+      const index = siblings.indexOf(el);
+      if (index >= 0) {
+        parts.push(`:nth-of-type(${index + 1})`);
+      }
     }
 
-    return texts.join(' ').substring(0, 150) || null;
+    return parts.join('');
+  }
+
+  function getPageTypeHint() {
+    const path = window.location.pathname.toLowerCase();
+    if (path.includes('/apply') || path.includes('/jobs') || path.includes('/careers')) return 'job_application';
+    if (path.includes('/checkout') || path.includes('/payment')) return 'checkout';
+    if (path.includes('/signup') || path.includes('/register')) return 'signup';
+    if (path.includes('/login') || path.includes('/signin')) return 'login';
+    return null;
+  }
+
+  function getFormContext(el) {
+    const form = el.form || el.closest('form');
+    const forms = Array.from(document.querySelectorAll('form'));
+    const formIndex = form ? forms.indexOf(form) : -1;
+    return {
+      formId: form ? (form.id || null) : null,
+      formName: form ? cleanText(form.getAttribute('name') || null, 80) : null,
+      formAction: form ? cleanText(form.getAttribute('action') || null, 240) : null,
+      formMethod: form ? cleanText(form.getAttribute('method') || null, 40) : null,
+      formIndex: formIndex >= 0 ? formIndex : null,
+    };
+  }
+
+  function getSectionContext(el) {
+    const container = el.closest('fieldset, section, article, [role="group"], [role="radiogroup"], .form-group, .form-field, .field, .question, .form-row, li, td, div');
+    if (!container) {
+      return {
+        sectionHeading: null,
+        parentSectionText: null,
+        nearbyText: null,
+      };
+    }
+
+    const heading = container.querySelector('legend, h1, h2, h3, h4, h5, h6, .heading, .section-title, .question-title, [role="heading"]');
+    const helpText = container.querySelector('.help-text, .description, .hint, small, .form-text, .helper-text');
+    const parentSectionText = cleanText(container.innerText || '', 320);
+
+    return {
+      sectionHeading: cleanText(heading?.innerText || null),
+      parentSectionText,
+      nearbyText: uniqueTexts([
+        heading?.innerText,
+        helpText?.innerText,
+        container.getAttribute('aria-label'),
+        container.getAttribute('data-section'),
+      ], 3).join(' ') || null,
+    };
+  }
+
+  // ─── Surrounding Text ────────────────────────────────────────
+  function getSurroundingText(el) {
+    return getSectionContext(el).nearbyText;
   }
 
   // ─── Select Options Extraction ───────────────────────────────
@@ -125,8 +201,45 @@ var FieldDetector = FieldDetector || (() => {
     if (el.tagName.toLowerCase() !== 'select') return null;
     return Array.from(el.options).map(opt => ({
       value: opt.value,
-      text: opt.text.trim(),
+      text: cleanText(opt.text || '') || '',
+      disabled: !!opt.disabled,
+      selected: !!opt.selected,
     }));
+  }
+
+  function getRadioOptions(el) {
+    if (el.type !== 'radio' || !el.name) return null;
+    const radios = Array.from(document.querySelectorAll('input[type="radio"]'))
+      .filter(radio => radio.name === el.name && isVisible(radio));
+
+    return radios.map(radio => ({
+      value: radio.value || radio.id || '',
+      text: cleanText(findLabel(radio) || radio.value || radio.id || '') || '',
+      checked: !!radio.checked,
+    }));
+  }
+
+  function getCheckboxOptions(el) {
+    if (el.type !== 'checkbox') return null;
+    return [{
+      value: el.value || 'true',
+      text: cleanText(findLabel(el) || el.value || el.name || el.id || 'checkbox') || 'checkbox',
+      checked: !!el.checked,
+    }];
+  }
+
+  function getCandidateOptions(el) {
+    return getSelectOptions(el) || getRadioOptions(el) || getCheckboxOptions(el);
+  }
+
+  function getCurrentValue(el) {
+    if (el.type === 'checkbox') return !!el.checked;
+    if (el.type === 'radio') return el.checked ? (el.value || true) : null;
+    if (el.tagName.toLowerCase() === 'select') {
+      const selected = el.options[el.selectedIndex];
+      return selected ? (selected.value || selected.text || '') : '';
+    }
+    return cleanText(el.value || '', 240) || '';
   }
 
   // ─── Main Scan Function ──────────────────────────────────────
@@ -154,24 +267,43 @@ var FieldDetector = FieldDetector || (() => {
       if (excludeIds.has(el.id)) return;
 
       const label = findLabel(el);
+      const section = getSectionContext(el);
+      const formContext = getFormContext(el);
+      const options = getCandidateOptions(el);
 
       const fieldInfo = {
         id:              el.id,
         name:            el.name || null,
         type:            el.type || el.tagName.toLowerCase(),
-        placeholder:     el.placeholder || null,
-        label:           label,
-        ariaLabel:       el.getAttribute('aria-label') || null,
+        placeholder:     cleanText(el.placeholder || null),
+        label:           cleanText(label),
+        ariaLabel:       cleanText(el.getAttribute('aria-label') || null),
         autocomplete:    el.getAttribute('autocomplete') || null,
         surroundingText: getSurroundingText(el),
-        value:           el.value || '',
+        nearbyText:      section.nearbyText,
+        sectionHeading:  section.sectionHeading,
+        parentSectionText: section.parentSectionText,
+        value:           getCurrentValue(el),
+        currentValue:    getCurrentValue(el),
         tagName:         el.tagName.toLowerCase(),
+        inputTag:        el.tagName.toLowerCase(),
         required:        el.required || false,
         readOnly:        el.readOnly || false,
-        options:         getSelectOptions(el),
-        formId:          el.form ? (el.form.id || el.form.name || null) : null,
+        visible:         true,
+        disabled:        !!el.disabled,
+        options,
+        candidateOptions: options,
+        cssSelector:     buildStableSelector(el),
+        pageTypeHint:    getPageTypeHint(),
         dataAttributes:  extractDataAttributes(el),
+        ...formContext,
       };
+
+      if (typeof LearnedMemory !== 'undefined' && typeof LearnedMemory.normalizeIntent === 'function') {
+        fieldInfo.normalizedIntent = LearnedMemory.normalizeIntent(fieldInfo);
+      } else {
+        fieldInfo.normalizedIntent = 'unknown';
+      }
 
       fields.push(fieldInfo);
     });
