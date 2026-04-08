@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 from .contracts import AnalyzeFieldsRequest, DetectedField
 
@@ -176,6 +177,12 @@ def normalize_request(request: AnalyzeFieldsRequest) -> Dict[str, Any]:
         "page_title": clean_text(request.page.page_title, 180),
         "page_type": clean_text(request.page.page_type, 80),
     }
+    if not page["domain"] and page["page_url"]:
+        try:
+            parsed = urlparse(page["page_url"])
+            page["domain"] = clean_text(parsed.hostname, 120)
+        except Exception:
+            page["domain"] = None
     form = {
         "form_id": clean_text(request.form.form_id, 120),
         "form_name": clean_text(request.form.form_name, 120),

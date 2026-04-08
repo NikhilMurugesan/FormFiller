@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+import asyncio
 from typing import Any, Dict, List, Tuple
 from uuid import uuid4
 
@@ -27,6 +28,8 @@ SENSITIVE_RE = re.compile(r"password|passcode|otp|cvv|cvc|credit.?card|ssn|socia
 MATCHED_THRESHOLD = 80
 UNCERTAIN_THRESHOLD = 55
 LEARNED_THRESHOLD = 80
+MAX_LLM_RETRIES = 2
+RETRYABLE_LLM_STATUS_RE = re.compile(r"\b(429|500|502|503|504)\b")
 
 
 def _trace(message: str, level: str = "INFO") -> None:
@@ -169,28 +172,52 @@ async def run_llm(
         return [], 0.0
 
     user_message = build_user_message(profile_data, normalized_context, llm_fields, retrieval_context)
-    response = await client.aio.models.generate_content(
-        model=MODEL_NAME,
-        contents=user_message,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            temperature=0.0,
-        ),
-    )
+    last_error: Exception | None = None
 
-    prompt_tokens = response.usage_metadata.prompt_token_count if response.usage_metadata else 0
-    output_tokens = response.usage_metadata.candidates_token_count if response.usage_metadata else 0
-    cost = (prompt_tokens / 1_000_000) * PRICE_PER_1M_PROMPT + (output_tokens / 1_000_000) * PRICE_PER_1M_CANDIDATE
-    data = json.loads(response.text)
-    suggestions = []
-    for raw in data.get("suggestions", []):
+    for attempt in range(MAX_LLM_RETRIES + 1):
         try:
-            suggestions.append(FieldSuggestion(**raw))
+            response = await client.aio.models.generate_content(
+                model=MODEL_NAME,
+                contents=user_message,
+                config=types.GenerateContentConfig(
+                    system_instruction=SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                ),
+            )
+
+            prompt_tokens = response.usage_metadata.prompt_token_count if response.usage_metadata else 0
+            output_tokens = response.usage_metadata.candidates_token_count if response.usage_metadata else 0
+            cost = (prompt_tokens / 1_000_000) * PRICE_PER_1M_PROMPT + (output_tokens / 1_000_000) * PRICE_PER_1M_CANDIDATE
+            data = json.loads(response.text)
+            suggestions = []
+            for raw in data.get("suggestions", []):
+                try:
+                    suggestions.append(FieldSuggestion(**raw))
+                except Exception as exc:
+                    _trace(f"Invalid LLM suggestion skipped: {exc} | payload={raw}", "WARNING")
+            _trace(f"LLM returned {len(suggestions)} suggestion(s). Cost=${cost:.6f}")
+            return suggestions, cost
         except Exception as exc:
-            _trace(f"Invalid LLM suggestion skipped: {exc} | payload={raw}", "WARNING")
-    _trace(f"LLM returned {len(suggestions)} suggestion(s). Cost=${cost:.6f}")
-    return suggestions, cost
+            last_error = exc
+            error_str = str(exc)
+            is_retryable = RETRYABLE_LLM_STATUS_RE.search(error_str) is not None
+            if attempt < MAX_LLM_RETRIES and is_retryable:
+                delay_sec = 2 * (attempt + 1)
+                _trace(
+                    f"LLM call failed on attempt {attempt + 1}/{MAX_LLM_RETRIES + 1} with retryable error: {error_str}. "
+                    f"Retrying in {delay_sec}s.",
+                    "WARNING",
+                )
+                await asyncio.sleep(delay_sec)
+                continue
+
+            _trace(f"LLM call failed: {error_str}", "ERROR")
+            break
+
+    if last_error:
+        _trace(f"Proceeding without LLM suggestions due to upstream failure: {last_error}", "WARNING")
+    return [], 0.0
 
 
 def coerce_llm_suggestion(
