@@ -10,7 +10,7 @@
  *  - Auto-migration from legacy ff_user_data format
  */
 
-var StorageManager = StorageManager || (() => {
+var StorageManager = (() => {
   // ─── Storage Keys ────────────────────────────────────────────
   const KEYS = {
     PROFILES:       'ff_profiles',

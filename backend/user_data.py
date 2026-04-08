@@ -21,7 +21,7 @@ USER_PROFILE = {
     "github_url": "https://github.com/NikhilMurugesan",
     "current_title": "Application Developer",
     "current_company": "UPS Supply Chain Solutions",
-    "open_to_work": true,
+    "open_to_work": True,
     "employment_type_preference": "Full-time",
     "work_authorization": "Indian Citizen"
       },
