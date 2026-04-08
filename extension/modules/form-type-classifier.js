@@ -13,7 +13,7 @@
  * Each type triggers different autofill behavior.
  */
 
-const FormTypeClassifier = (() => {
+var FormTypeClassifier = FormTypeClassifier || (() => {
 
   // ─── Field Indicator Patterns ────────────────────────────────
   const INDICATORS = {

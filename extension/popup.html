@@ -303,6 +303,30 @@
 
       <!-- Privacy -->
       <div class="divider"></div>
+
+      <!-- Learned Memory -->
+      <div class="card-header">
+        <span class="card-title">
+          <span class="card-icon">🧠</span> Learned Memory
+        </span>
+        <button class="btn btn-ghost btn-sm" id="btnClearLearnedMemory">Clear All</button>
+      </div>
+      <div id="learnedMemoryStats" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;">
+        Loading...
+      </div>
+      <div class="domain-list" id="learnedMemoryList">
+        <div class="empty-state">
+          <div class="es-icon">🧠</div>
+          No learned selections yet. Use the extension and it will learn your preferences.
+        </div>
+      </div>
+      <div class="io-row mt-2">
+        <button class="btn btn-ghost btn-sm" id="btnExportMemory" style="flex:1;">📤 Export Memory</button>
+        <button class="btn btn-ghost btn-sm" id="btnImportMemory" style="flex:1;">📥 Import Memory</button>
+      </div>
+      <input type="file" id="importMemoryInput" accept=".json" style="display:none;">
+
+      <div class="divider"></div>
       <div class="privacy-card">
         <span class="priv-icon">🛡️</span>
         <div class="priv-text">

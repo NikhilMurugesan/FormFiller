@@ -156,6 +156,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           break;
         }
 
+        // ── Learned Memory Stats ─────────────────────────────
+        case 'LEARNED_MEMORY_STATS': {
+          const stats = await storageGet('ff_learned_memory') || [];
+          const domains = new Set(stats.filter(e => e.domain !== '__global__').map(e => e.domain));
+          sendResponse({
+            totalEntries: stats.length,
+            domainCount: domains.size,
+            globalCount: stats.filter(e => e.domain === '__global__').length,
+          });
+          break;
+        }
+
+        case 'CLEAR_LEARNED_MEMORY': {
+          if (request.domain) {
+            let entries = await storageGet('ff_learned_memory') || [];
+            entries = entries.filter(e => e.domain !== request.domain);
+            await storageSet({ ff_learned_memory: entries });
+          } else {
+            await storageSet({ ff_learned_memory: [] });
+          }
+          sendResponse({ status: 'ok' });
+          break;
+        }
+
+        case 'GET_LEARNED_ENTRIES': {
+          const entries = await storageGet('ff_learned_memory') || [];
+          const filtered = request.domain
+            ? entries.filter(e => e.domain === request.domain)
+            : entries;
+          sendResponse({ entries: filtered });
+          break;
+        }
+
         default:
           sendResponse({ status: 'unknown_action' });
       }
@@ -187,6 +220,10 @@ async function ensureContentScript(tabId) {
         'modules/injection-engine.js',
         'modules/form-type-classifier.js',
         'modules/domain-intelligence.js',
+        'modules/learned-memory.js',
+        'modules/checkbox-engine.js',
+        'modules/dropdown-engine.js',
+        'modules/decision-engine.js',
         'content.js',
       ],
     });

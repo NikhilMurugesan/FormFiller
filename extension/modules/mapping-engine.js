@@ -13,7 +13,7 @@
  * Returns confidence scores (0–100) for each match.
  */
 
-const MappingEngine = (() => {
+var MappingEngine = MappingEngine || (() => {
 
   // ─── Synonym Dictionary ──────────────────────────────────────
   // Each profile key maps to an array of common field names/ids

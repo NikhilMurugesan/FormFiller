@@ -12,7 +12,7 @@
  *  - Undo capability (stores original values)
  */
 
-const InjectionEngine = (() => {
+var InjectionEngine = InjectionEngine || (() => {
 
   // Store original values for undo
   const _originalValues = new Map();

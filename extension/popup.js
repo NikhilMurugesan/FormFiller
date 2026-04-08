@@ -29,6 +29,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadProfilesList();
   await loadDocumentStatus();
   await loadDomainMappings();
+  await loadLearnedMemory();
 
   // Set up event listeners
   setupTabNavigation();
@@ -37,6 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setupSettingsActions();
   setupDocumentUpload();
   setupProfileDropdown();
+  setupLearnedMemoryActions();
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -702,6 +704,130 @@ async function loadDomainMappings() {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// SECTION 10.5: Learned Memory Viewer
+// ═══════════════════════════════════════════════════════════════
+
+async function loadLearnedMemory() {
+  try {
+    const stats = await StorageManager.getLearnedMemoryStats();
+    const statsEl = document.getElementById('learnedMemoryStats');
+    const listEl = document.getElementById('learnedMemoryList');
+
+    if (stats.totalEntries === 0) {
+      statsEl.textContent = 'No learned entries yet';
+      listEl.innerHTML = `
+        <div class="empty-state">
+          <div class="es-icon">🧠</div>
+          No learned selections yet. Use the extension to autofill forms and it will learn your preferences.
+        </div>
+      `;
+      return;
+    }
+
+    statsEl.innerHTML = `📊 <strong>${stats.totalEntries}</strong> entries • <strong>${stats.domainCount}</strong> domains • <strong>${stats.globalCount}</strong> global`;
+
+    // Load all entries grouped by domain
+    const entries = await StorageManager.getLearnedMemory();
+    const byDomain = {};
+    for (const e of entries) {
+      if (!byDomain[e.domain]) byDomain[e.domain] = [];
+      byDomain[e.domain].push(e);
+    }
+
+    const domains = Object.keys(byDomain).filter(d => d !== '__global__').sort();
+    const globals = byDomain['__global__'] || [];
+
+    let html = '';
+    for (const domain of domains) {
+      const items = byDomain[domain];
+      html += `
+        <div class="domain-item">
+          <div class="di-domain" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>${domain}</span>
+            <button class="btn btn-ghost btn-sm clear-domain-memory" data-domain="${domain}" style="font-size:9px;padding:2px 6px;">Clear</button>
+          </div>
+          <div class="di-fields">${items.map(e => {
+            const conf = e.confidence || 0;
+            const confColor = conf >= 70 ? 'var(--success)' : conf >= 50 ? 'var(--warning)' : 'var(--error)';
+            return `<span style="color:var(--text-muted)">${e.fieldIntent || e.fieldLabel}</span> → <span style="color:var(--accent-purple)">${truncate(String(e.value), 20)}</span> <span style="color:${confColor};font-size:9px">${conf}%</span>`;
+          }).join(' • ')}</div>
+        </div>
+      `;
+    }
+
+    if (globals.length > 0) {
+      html += `
+        <div class="domain-item">
+          <div class="di-domain">🌍 Global Preferences</div>
+          <div class="di-fields">${globals.map(e => {
+            return `${e.fieldIntent} → ${truncate(String(e.value), 20)} (${e.confidence}%)`;
+          }).join(' • ')}</div>
+        </div>
+      `;
+    }
+
+    listEl.innerHTML = html;
+
+    // Per-domain clear buttons
+    listEl.querySelectorAll('.clear-domain-memory').forEach(btn => {
+      btn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        const domain = btn.dataset.domain;
+        if (confirm(`Clear all learned memory for ${domain}?`)) {
+          await StorageManager.clearLearnedDomain(domain);
+          await loadLearnedMemory();
+          showToast(`Cleared memory for ${domain}`, 'info');
+        }
+      });
+    });
+  } catch (err) {
+    console.error('[Popup] Failed to load learned memory:', err);
+  }
+}
+
+function setupLearnedMemoryActions() {
+  // Clear all learned memory
+  document.getElementById('btnClearLearnedMemory').addEventListener('click', async () => {
+    if (confirm('Clear ALL learned memory? This removes checkbox/dropdown preferences for all sites.')) {
+      await StorageManager.clearLearnedMemory();
+      await loadLearnedMemory();
+      showToast('All learned memory cleared', 'info');
+    }
+  });
+
+  // Export learned memory
+  document.getElementById('btnExportMemory').addEventListener('click', async () => {
+    const json = await StorageManager.exportLearnedMemory();
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'formfiller_learned_memory.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Learned memory exported', 'success');
+  });
+
+  // Import learned memory
+  document.getElementById('btnImportMemory').addEventListener('click', () => {
+    document.getElementById('importMemoryInput').click();
+  });
+
+  document.getElementById('importMemoryInput').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      await StorageManager.importLearnedMemory(text);
+      await loadLearnedMemory();
+      showToast('Learned memory imported', 'success');
+    } catch (err) {
+      showToast('Import failed: ' + err.message, 'error');
+    }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SECTION 10: Document Upload (Preserved)
 // ═══════════════════════════════════════════════════════════════
 
@@ -777,6 +903,10 @@ async function ensureContentScript(tabId) {
         'modules/injection-engine.js',
         'modules/form-type-classifier.js',
         'modules/domain-intelligence.js',
+        'modules/learned-memory.js',
+        'modules/checkbox-engine.js',
+        'modules/dropdown-engine.js',
+        'modules/decision-engine.js',
         'content.js',
       ],
     });

@@ -8,7 +8,7 @@
  * Uses StorageManager under the hood for persistence.
  */
 
-const DomainIntelligence = (() => {
+var DomainIntelligence = DomainIntelligence || (() => {
 
   /**
    * Extract the hostname from the current page or a URL.

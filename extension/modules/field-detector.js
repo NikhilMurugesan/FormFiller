@@ -14,7 +14,7 @@
  *  - Delayed rescan for dynamic forms (React, Angular, Vue)
  */
 
-const FieldDetector = (() => {
+var FieldDetector = FieldDetector || (() => {
 
   let _idCounter = 0;
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "FormFiller Pro",
-  "version": "2.0.0",
-  "description": "Smart, privacy-first form autofill with multi-profile support, confidence scoring, and optional AI assist.",
+  "version": "2.1.0",
+  "description": "Smart, privacy-first form autofill with multi-profile support, confidence scoring, learned memory, and optional AI assist.",
 
   "permissions": [
     "activeTab",
@@ -35,6 +35,10 @@
         "modules/injection-engine.js",
         "modules/form-type-classifier.js",
         "modules/domain-intelligence.js",
+        "modules/learned-memory.js",
+        "modules/checkbox-engine.js",
+        "modules/dropdown-engine.js",
+        "modules/decision-engine.js",
         "content.js"
       ],
       "run_at": "document_idle"

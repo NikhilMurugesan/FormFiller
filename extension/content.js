@@ -276,14 +276,14 @@ if (typeof window._ffProInitialized === 'undefined') {
   // ═══════════════════════════════════════════════════════════
 
   /**
-   * Full autofill pipeline: scan → safety filter → match → inject
+   * Full autofill pipeline: scan → safety filter → match → decision engine → inject
    */
   async function performAutofill(profileData, domainOverrides = {}, onlyEmpty = false) {
     // Step 1: Scan fields with retry for dynamic forms
     const fields = await FieldDetector.scanWithRetry(_filledFieldIds);
 
     if (fields.length === 0) {
-      return { filled: [], skipped: [], blocked: [], failed: [], formType: null };
+      return { filled: [], skipped: [], blocked: [], failed: [], formType: null, decisionResults: null };
     }
 
     // Step 2: Classify form type
@@ -293,19 +293,51 @@ if (typeof window._ffProInitialized === 'undefined') {
     // Step 3: Safety filter — remove sensitive fields
     const { safe, blocked } = SafetyFilter.filterFields(fields);
 
-    // Step 4: Match fields to profile keys
-    let mappings = MappingEngine.matchAllFields(safe, profileData, domainOverrides);
+    // Step 4: Decision Engine — process checkboxes, dropdowns, radios
+    const domain = DomainIntelligence.getDomain();
+    let decisionResults = null;
+    if (typeof DecisionEngine !== 'undefined') {
+      const settings = {};
+      try {
+        const resp = await chrome.runtime.sendMessage({ action: 'GET_SETTINGS' });
+        if (resp?.settings) Object.assign(settings, resp.settings);
+      } catch (_) {}
 
-    // Step 5: Apply domain intelligence overrides
+      decisionResults = await DecisionEngine.processFields(safe, profileData, domain, settings);
+
+      // Apply checkbox/dropdown/radio decisions
+      const applied = DecisionEngine.applyAll(decisionResults);
+
+      // Record successful fills into learned memory
+      await DecisionEngine.recordSuccessfulFills(applied, domain, formType?.type);
+
+      // Track filled IDs from decision engine
+      for (const s of [...(applied.checkboxes?.selected || []), ...(applied.dropdowns?.selected || []), ...(applied.radios?.selected || [])]) {
+        _filledFieldIds.add(s.field?.id || s.field?.fieldId);
+      }
+
+      // Filter out checkbox/dropdown/radio fields from normal pipeline
+      var otherFields = decisionResults.otherFields || [];
+    } else {
+      var otherFields = safe;
+    }
+
+    // Step 5: Match remaining text/date/etc. fields to profile keys
+    let mappings = MappingEngine.matchAllFields(otherFields, profileData, domainOverrides);
+
+    // Step 6: Apply domain intelligence overrides
     mappings = DomainIntelligence.applyOverrides(mappings, domainOverrides, profileData);
 
-    // Step 6: Inject values
+    // Step 7: Inject values for text fields
     const injectionResult = InjectionEngine.injectAll(mappings, { onlyEmpty });
 
     // Track filled IDs
     for (const f of injectionResult.filled) {
       _filledFieldIds.add(f.id);
     }
+
+    // Step 8: Start watching for user corrections on filled fields
+    startCorrectionWatchers(domain, formType?.type);
 
     return {
       filled: injectionResult.filled,
@@ -314,7 +346,8 @@ if (typeof window._ffProInitialized === 'undefined') {
       failed: injectionResult.failed,
       formType,
       totalFields: fields.length,
-      mappings, // for preview panel
+      mappings,
+      decisionResults,
     };
   }
 
@@ -328,12 +361,20 @@ if (typeof window._ffProInitialized === 'undefined') {
     let mappings = MappingEngine.matchAllFields(safe, profileData, domainOverrides);
     mappings = DomainIntelligence.applyOverrides(mappings, domainOverrides, profileData);
 
+    // Also run DecisionEngine preview for checkboxes/dropdowns
+    const domain = DomainIntelligence.getDomain();
+    let decisionPreview = null;
+    if (typeof DecisionEngine !== 'undefined') {
+      decisionPreview = await DecisionEngine.processFields(safe, profileData, domain, {});
+    }
+
     return {
       fields,
       formType,
       safe,
       blocked,
       mappings,
+      decisionPreview,
       totalFields: fields.length,
       matchedCount: mappings.filter(m => m.status === 'matched').length,
       unmatchedCount: mappings.filter(m => m.status === 'unmatched').length,
@@ -495,18 +536,92 @@ if (typeof window._ffProInitialized === 'undefined') {
   });
 
   // ═══════════════════════════════════════════════════════════
-  // SECTION 4: Initialize
+  // SECTION 5: User Correction Watchers (Learning)
+  // ═══════════════════════════════════════════════════════════
+
+  let _correctionListeners = [];
+
+  /**
+   * Watch filled fields for user corrections.
+   * When a user changes a field that was autofilled, record the
+   * correction in LearnedMemory.
+   */
+  function startCorrectionWatchers(domain, pageType) {
+    // Clean up previous watchers
+    stopCorrectionWatchers();
+
+    if (typeof LearnedMemory === 'undefined') return;
+
+    const filledElements = document.querySelectorAll('[data-ff-filled="true"]');
+
+    filledElements.forEach(el => {
+      const handler = async () => {
+        // Delay slightly so the value settles
+        await new Promise(r => setTimeout(r, 200));
+
+        const fieldInfo = {
+          id:          el.id,
+          name:        el.name || '',
+          type:        el.type || el.tagName.toLowerCase(),
+          label:       FieldDetector.findLabel(el) || '',
+          placeholder: el.placeholder || '',
+          ariaLabel:   el.getAttribute('aria-label') || '',
+        };
+
+        let newValue;
+        if (el.type === 'checkbox') {
+          newValue = el.checked;
+        } else if (el.tagName.toLowerCase() === 'select') {
+          const selOpt = el.options[el.selectedIndex];
+          newValue = selOpt ? selOpt.text : el.value;
+        } else {
+          newValue = el.value;
+        }
+
+        console.log(`[FormFiller] User corrected: ${fieldInfo.id} = ${newValue}`);
+
+        await LearnedMemory.record({
+          domain,
+          pageType,
+          field: fieldInfo,
+          value: newValue,
+          valueSource: 'manual_correction',
+          confidence: 80, // corrections get high initial confidence
+        });
+      };
+
+      // Listen for change events (covers select, checkbox, radio)
+      el.addEventListener('change', handler);
+      // For text inputs, listen on blur (after user finishes editing)
+      if (el.type !== 'checkbox' && el.type !== 'radio' && el.tagName.toLowerCase() !== 'select') {
+        el.addEventListener('blur', handler);
+      }
+
+      _correctionListeners.push({ el, handler });
+    });
+
+    console.log(`[FormFiller] Watching ${filledElements.length} fields for user corrections`);
+  }
+
+  function stopCorrectionWatchers() {
+    for (const { el, handler } of _correctionListeners) {
+      el.removeEventListener('change', handler);
+      el.removeEventListener('blur', handler);
+    }
+    _correctionListeners = [];
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // SECTION 6: Initialize
   // ═══════════════════════════════════════════════════════════
 
   // Check settings and create FAB if enabled
   chrome.runtime.sendMessage({ action: 'GET_SETTINGS' }, (response) => {
     if (chrome.runtime.lastError) {
-      // Extension context may be invalid, silently ignore
       console.log('[FormFiller] Could not contact background script');
       return;
     }
     if (response?.settings?.showFab !== false) {
-      // Wait for body to be ready
       if (document.body) {
         createFAB();
       } else {
@@ -517,12 +632,13 @@ if (typeof window._ffProInitialized === 'undefined') {
 
   // Watch for SPA navigation changes
   FieldDetector.watchForChanges(() => {
-    // DOM changed significantly — could be SPA navigation
     _filledFieldIds.clear();
     _lastScanResults = null;
+    stopCorrectionWatchers();
     console.log('[FormFiller] DOM change detected — reset state');
   });
 
-  console.log('[FormFiller Pro] Content script initialized');
+  console.log('[FormFiller Pro] Content script initialized (v2.1 w/ learning)');
 
 } // end guard
+

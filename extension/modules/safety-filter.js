@@ -9,7 +9,7 @@
  *  - Payment-related fields
  */
 
-const SafetyFilter = (() => {
+var SafetyFilter = SafetyFilter || (() => {
 
   // ─── Sensitive Field Patterns ────────────────────────────────
   // Each category has patterns checked against name, id, placeholder, label, type, autocomplete
@@ -124,7 +124,59 @@ const SafetyFilter = (() => {
     return { safe, blocked };
   }
 
-  return { check, filterFields, SENSITIVE_PATTERNS };
+  // ─── Checkbox-Specific Consent Patterns ──────────────────────
+  // These don't block the field from being detected, but flag it
+  // as a legal/consent checkbox that should never be auto-checked.
+  const CONSENT_CHECKBOX_PATTERNS = [
+    /terms?\s*(and|&|\+)\s*conditions?/i,
+    /terms\s*of\s*(service|use)/i,
+    /privacy\s*policy/i,
+    /cookie\s*policy/i,
+    /\bconsent\b/i,
+    /\bi\s*(agree|accept|acknowledge|certify|confirm|attest|declare)/i,
+    /background\s*(check|verification|screen)/i,
+    /legal\s*(certification|declaration|agreement)/i,
+    /authorization\s*to\s*(release|process|share)/i,
+    /electronic\s*signature/i,
+    /accurate\s*(and|&)\s*(complete|true)/i,
+    /under\s*penalty/i,
+    /perjury/i,
+    /certif(y|ication)\s*(that)?/i,
+    /gdpr/i,
+    /binding\s*agreement/i,
+    /non.?disclosure/i,
+    /waiver/i,
+    /indemnif/i,
+  ];
+
+  /**
+   * Check if a checkbox field is a legal/consent checkbox.
+   * This does NOT block the field from detection—it only flags it.
+   * CheckboxEngine uses this to prevent auto-checking.
+   * 
+   * @param {Object} field - Field descriptor
+   * @returns {{ isConsent: boolean, reason: string|null }}
+   */
+  function checkConsent(field) {
+    const text = [
+      field.label || '',
+      field.ariaLabel || '',
+      field.name || '',
+      field.id || '',
+      field.placeholder || '',
+      field.surroundingText || '',
+    ].join(' ');
+
+    for (const pattern of CONSENT_CHECKBOX_PATTERNS) {
+      if (pattern.test(text)) {
+        return { isConsent: true, reason: 'Legal/consent checkbox' };
+      }
+    }
+
+    return { isConsent: false, reason: null };
+  }
+
+  return { check, filterFields, checkConsent, SENSITIVE_PATTERNS, CONSENT_CHECKBOX_PATTERNS };
 })();
 
 if (typeof globalThis !== 'undefined') globalThis.SafetyFilter = SafetyFilter;

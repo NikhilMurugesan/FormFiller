@@ -10,7 +10,7 @@
  *  - Auto-migration from legacy ff_user_data format
  */
 
-const StorageManager = (() => {
+var StorageManager = StorageManager || (() => {
   // ─── Storage Keys ────────────────────────────────────────────
   const KEYS = {
     PROFILES:       'ff_profiles',
@@ -19,6 +19,7 @@ const StorageManager = (() => {
     SETTINGS:       'ff_settings',
     LEGACY_DATA:    'ff_user_data',       // old format — migrate on first run
     DOC_META:       'ff_doc_meta',
+    LEARNED_MEMORY: 'ff_learned_memory',  // checkbox/dropdown/correction memory
   };
 
   // ─── Default Profile Template ────────────────────────────────
@@ -351,6 +352,44 @@ const StorageManager = (() => {
     await _remove(KEYS.DOC_META);
   }
 
+  // ─── Learned Memory ──────────────────────────────────────────
+
+  async function getLearnedMemory() {
+    return (await _get(KEYS.LEARNED_MEMORY)) || [];
+  }
+
+  async function getLearnedMemoryStats() {
+    const entries = await getLearnedMemory();
+    const domains = new Set(entries.filter(e => e.domain !== '__global__').map(e => e.domain));
+    return {
+      totalEntries: entries.length,
+      domainCount: domains.size,
+      globalCount: entries.filter(e => e.domain === '__global__').length,
+      domainEntries: entries.filter(e => e.domain !== '__global__').length,
+    };
+  }
+
+  async function clearLearnedMemory() {
+    await _set({ [KEYS.LEARNED_MEMORY]: [] });
+  }
+
+  async function clearLearnedDomain(domain) {
+    let entries = await getLearnedMemory();
+    entries = entries.filter(e => e.domain !== domain);
+    await _set({ [KEYS.LEARNED_MEMORY]: entries });
+  }
+
+  async function exportLearnedMemory() {
+    const entries = await getLearnedMemory();
+    return JSON.stringify(entries, null, 2);
+  }
+
+  async function importLearnedMemory(jsonString) {
+    const imported = JSON.parse(jsonString);
+    if (!Array.isArray(imported)) throw new Error('Expected array of memory entries');
+    await _set({ [KEYS.LEARNED_MEMORY]: imported });
+  }
+
   // ─── Reset Everything ────────────────────────────────────────
 
   async function resetAll() {
@@ -369,6 +408,9 @@ const StorageManager = (() => {
     deleteDomainMapping, clearDomainMappings,
     getSettings, updateSettings,
     getDocMeta, setDocMeta, clearDocMeta,
+    getLearnedMemory, getLearnedMemoryStats,
+    clearLearnedMemory, clearLearnedDomain,
+    exportLearnedMemory, importLearnedMemory,
     resetAll,
   };
 })();
