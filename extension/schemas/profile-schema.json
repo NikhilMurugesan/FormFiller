@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FormFiller Pro Profile",
+  "description": "Schema for user profile data used by FormFiller Pro extension",
+  "type": "object",
+  "required": ["id", "name", "data"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique profile identifier"
+    },
+    "name": {
+      "type": "string",
+      "description": "Display name of the profile (e.g., Personal, Work)"
+    },
+    "icon": {
+      "type": "string",
+      "description": "Emoji icon for the profile"
+    },
+    "data": {
+      "type": "object",
+      "description": "Profile field data for autofill",
+      "properties": {
+        "full_name":            { "type": "string", "description": "Full name" },
+        "first_name":           { "type": "string", "description": "First / given name" },
+        "last_name":            { "type": "string", "description": "Last / family name" },
+        "email":                { "type": "string", "format": "email", "description": "Email address" },
+        "phone":                { "type": "string", "description": "Phone number with country code" },
+        "address":              { "type": "string", "description": "Street address line 1" },
+        "city":                 { "type": "string", "description": "City / town" },
+        "state":                { "type": "string", "description": "State / province / region" },
+        "zip":                  { "type": "string", "description": "ZIP / postal code / pincode" },
+        "country":              { "type": "string", "description": "Country name" },
+        "current_company":      { "type": "string", "description": "Current employer / organization" },
+        "current_title":        { "type": "string", "description": "Current job title / position" },
+        "linkedin":             { "type": "string", "format": "uri", "description": "LinkedIn profile URL" },
+        "portfolio":            { "type": "string", "format": "uri", "description": "Portfolio website URL" },
+        "github":               { "type": "string", "format": "uri", "description": "GitHub profile URL" },
+        "website":              { "type": "string", "format": "uri", "description": "Personal website URL" },
+        "highest_degree":       { "type": "string", "description": "Highest degree achieved" },
+        "school":               { "type": "string", "description": "School / university name" },
+        "major":                { "type": "string", "description": "Field of study / major" },
+        "graduation_year":      { "type": "string", "description": "Year of graduation" },
+        "years_of_experience":  { "type": "string", "description": "Total years of work experience" },
+        "skills":               { "type": "string", "description": "Comma-separated list of skills" },
+        "summary":              { "type": "string", "description": "Professional summary / bio / about me" },
+        "gender":               { "type": "string", "description": "Gender" },
+        "dob":                  { "type": "string", "description": "Date of birth (YYYY-MM-DD)" }
+      }
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Profile creation timestamp"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Last modified timestamp"
+    }
+  }
+}

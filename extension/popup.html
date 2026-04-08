@@ -1,194 +1,342 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>AI Form Filler</title>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            width: 320px;
-            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-            background: linear-gradient(145deg, #0f0c29, #302b63, #24243e);
-            color: #f1f1f1;
-            overflow-x: hidden;
-        }
-
-        .header {
-            background: rgba(255, 255, 255, 0.05);
-            backdrop-filter: blur(10px);
-            padding: 20px;
-            border-bottom: 2px solid rgba(255, 255, 255, 0.1);
-            text-align: center;
-        }
-        .header h3 { font-size: 18px; font-weight: 700; background: linear-gradient(90deg, #a78bfa, #f472b6); background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .header p { font-size: 11px; color: #cbd5e1; margin-top: 4px; font-weight: 300; letter-spacing: 0.5px; }
-
-        .section {
-            padding: 16px 20px;
-            background: rgba(0, 0, 0, 0.2);
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        /* Document Upload Card */
-        .upload-zone {
-            background: rgba(26, 16, 48, 0.6);
-            border: 1px dashed rgba(167, 139, 250, 0.5);
-            border-radius: 12px;
-            padding: 20px 14px;
-            text-align: center;
-            cursor: pointer;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            box-shadow: inset 0 0 15px rgba(0,0,0,0.5);
-        }
-        .upload-zone:hover { 
-            border-color: #a78bfa; 
-            background: rgba(167, 139, 250, 0.15); 
-            transform: translateY(-2px);
-            box-shadow: 0 4px 20px rgba(124, 58, 237, 0.3);
-        }
-        .upload-zone input { display: none; }
-        .upload-zone label { cursor: pointer; display: block; }
-        .upload-icon { font-size: 32px; line-height: 1; margin-bottom: 8px; filter: drop-shadow(0 0 8px rgba(167,139,250,0.8)); }
-        .upload-hint { font-size: 10px; color: #94a3b8; font-weight: 400; margin-top: 4px; }
-        .upload-cta { font-size: 13px; font-weight: 600; color: #e2e8f0; letter-spacing: 0.3px; }
-
-        .doc-badge {
-            display: none;
-            align-items: center;
-            gap: 10px;
-            background: rgba(20, 15, 45, 0.8);
-            border-radius: 8px;
-            padding: 10px 12px;
-            margin-top: 12px;
-            font-size: 12px;
-            border: 1px solid rgba(167, 139, 250, 0.3);
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            backdrop-filter: blur(5px);
-        }
-        .doc-badge.visible { display: flex; animation: slideIn 0.3s ease-out; }
-        .doc-badge .icon { font-size: 16px; text-shadow: 0 0 5px #34d399; }
-        .doc-badge .name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #f8fafc; font-weight: 500; }
-        .doc-badge .chunks { color: #94a3b8; font-size: 10px; background: rgba(0,0,0,0.4); padding: 3px 6px; border-radius: 4px; }
-
-        @keyframes slideIn { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: translateY(0); } }
-
-        /* Buttons */
-        .btn {
-            width: 100%;
-            border: none;
-            padding: 12px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            font-family: inherit;
-            cursor: pointer;
-            transition: all 0.2s ease-in-out;
-            margin-top: 10px;
-            position: relative;
-            overflow: hidden;
-        }
-        .btn-primary {
-            background: linear-gradient(135deg, #7c3aed, #ec4899);
-            color: #ffffff;
-            box-shadow: 0 4px 15px rgba(124, 58, 237, 0.4);
-            text-shadow: 0 1px 2px rgba(0,0,0,0.2);
-        }
-        .btn-primary:hover { 
-            transform: scale(1.02); 
-            box-shadow: 0 6px 20px rgba(236, 72, 153, 0.5); 
-        }
-        .btn-primary:active { transform: scale(0.98); }
-        .btn-primary:disabled { background: #334155; box-shadow: none; cursor: not-allowed; color: #94a3b8; transform: none; }
-        
-        .btn-danger {
-            background: rgba(248, 113, 113, 0.1);
-            border: 1px solid rgba(248, 113, 113, 0.3);
-            color: #fca5a5;
-            font-size: 12px;
-            padding: 8px;
-            margin-top: 8px;
-        }
-        .btn-danger:hover { background: rgba(248, 113, 113, 0.2); border-color: #f87171; color: #fff; }
-
-        /* Data Config Input */
-        .config-input {
-            width: 100%;
-            height: 65px;
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            color: #e2e8f0;
-            padding: 10px;
-            border-radius: 8px;
-            font-size: 11px;
-            resize: none;
-            font-family: monospace;
-            box-shadow: inset 0 2px 4px rgba(0,0,0,0.3);
-            transition: all 0.2s;
-        }
-        .config-input:focus { outline: none; border-color: #a78bfa; background: rgba(15, 23, 42, 0.9); box-shadow: 0 0 0 2px rgba(167, 139, 250, 0.2); }
-        
-        /* Status Message */
-        #status {
-            padding: 12px 20px 16px;
-            font-size: 12px;
-            font-weight: 500;
-            min-height: 40px;
-            text-align: center;
-            letter-spacing: 0.2px;
-        }
-        .success { color: #6ee7b7; text-shadow: 0 0 8px rgba(110, 231, 183, 0.5); }
-        .error { color: #fca5a5; }
-        .loading { color: #93c5fd; animation: pulse 1.5s infinite; }
-        .info { color: #c4b5fd; }
-        
-        @keyframes pulse { 0% { opacity: 0.7; } 50% { opacity: 1; } 100% { opacity: 0.7; } }
-
-        /* Upload progress */
-        #uploadStatus { font-size: 11px; color: #94a3b8; text-align: center; margin-top: 8px; min-height: 16px; transition: color 0.3s; }
-    </style>
+  <meta charset="UTF-8">
+  <title>FormFiller Pro</title>
+  <meta name="description" content="Premium AI-powered form autofill extension">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-    <div class="header">
-        <h3>✨ AI Autofiller Pro</h3>
-        <p>Premium Agentic Form Assistant</p>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- HEADER                                                  -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="header">
+    <div class="header-left">
+      <span class="header-logo">⚡</span>
+      <div class="header-title">
+        <h3>FormFiller Pro</h3>
+        <p>Smart Form Autofill</p>
+      </div>
     </div>
+    <div style="position: relative;">
+      <div class="header-profile-badge" id="profileBadge" title="Switch profile">
+        <span class="badge-icon" id="badgeIcon">👤</span>
+        <span id="badgeName">Personal</span>
+        <span class="badge-arrow">▼</span>
+      </div>
+      <div class="profile-dropdown" id="profileDropdown"></div>
+    </div>
+  </div>
 
-    <!-- Document Upload Section -->
-    <div class="section" style="border-top: 1px solid rgba(255,255,255,0.1);">
-        <div class="upload-zone" id="uploadZone">
-            <label for="docFileInput">
-                <div class="upload-icon">🪄</div>
-                <div class="upload-cta">Drop Context Document</div>
-                <div class="upload-hint">Upload PDF / DOCX to inject knowledge</div>
-            </label>
-            <input type="file" id="docFileInput" accept=".pdf,.docx">
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- TAB NAVIGATION                                          -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="tab-nav">
+    <button class="tab-btn active" data-tab="home">
+      <span class="tab-icon">🏠</span> Home
+    </button>
+    <button class="tab-btn" data-tab="profiles">
+      <span class="tab-icon">👤</span> Profiles
+    </button>
+    <button class="tab-btn" data-tab="settings">
+      <span class="tab-icon">⚙️</span> Settings
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- TAB: HOME                                               -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="tab-content active" id="tab-home">
+    <div class="section">
+
+      <!-- Page Info -->
+      <div class="page-info" id="pageInfo">
+        <span class="pi-icon" id="pageInfoIcon">🌐</span>
+        <div class="pi-details">
+          <div class="pi-domain" id="pageInfoDomain">Detecting page...</div>
+          <div class="pi-meta">
+            <span id="pageInfoTitle"></span>
+          </div>
         </div>
+        <span class="form-type-badge" id="formTypeBadge" style="display:none;">
+          <span id="formTypeIcon"></span>
+          <span id="formTypeLabel"></span>
+        </span>
+      </div>
 
+      <!-- Quick Actions -->
+      <div class="quick-actions">
+        <button class="action-btn primary" id="btnAutofillAll">
+          <span class="action-icon">⚡</span> Autofill All Fields
+        </button>
+        <button class="action-btn" id="btnScan">
+          <span class="action-icon">🔍</span>
+          Scan Form
+        </button>
+        <button class="action-btn" id="btnFillEmpty">
+          <span class="action-icon">📝</span>
+          Fill Empty
+        </button>
+        <button class="action-btn" id="btnClear">
+          <span class="action-icon">🗑️</span>
+          Clear Filled
+        </button>
+        <button class="action-btn" id="btnPreview">
+          <span class="action-icon">👁️</span>
+          Preview
+        </button>
+      </div>
+
+      <!-- Stats Bar (shown after scan) -->
+      <div class="stats-bar hidden" id="statsBar">
+        <div class="stat-chip">
+          <span class="stat-value" id="statTotal">0</span>
+          <span class="stat-label">Found</span>
+        </div>
+        <div class="stat-chip success">
+          <span class="stat-value" id="statMatched">0</span>
+          <span class="stat-label">Matched</span>
+        </div>
+        <div class="stat-chip warning">
+          <span class="stat-value" id="statSkipped">0</span>
+          <span class="stat-label">Skipped</span>
+        </div>
+        <div class="stat-chip error">
+          <span class="stat-value" id="statBlocked">0</span>
+          <span class="stat-label">Blocked</span>
+        </div>
+      </div>
+
+      <!-- Progress Bar (shown during/after fill) -->
+      <div class="progress-container hidden" id="progressContainer">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill" style="width: 0%"></div>
+        </div>
+        <div class="progress-label">
+          <span id="progressText">0 of 0 fields filled</span>
+          <span id="progressPercent">0%</span>
+        </div>
+      </div>
+
+      <!-- Field Review List (shown after scan/preview) -->
+      <div class="card hidden" id="fieldReviewCard">
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">📋</span> Detected Fields
+          </span>
+          <span style="font-size:10px;color:var(--text-muted)" id="fieldCount"></span>
+        </div>
+        <div class="field-list" id="fieldList"></div>
+
+        <!-- Blocked Fields -->
+        <div class="blocked-section hidden" id="blockedSection">
+          <div class="divider"></div>
+          <span class="card-title" style="font-size:11px;margin-bottom:6px;display:block;">
+            <span>🔒</span> Blocked (Safety)
+          </span>
+          <div id="blockedList"></div>
+        </div>
+      </div>
+
+      <!-- Document Upload (Prominent) -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">📄</span> Context Document
+          </span>
+        </div>
+        <div class="upload-zone" id="uploadZone">
+          <label for="docFileInput">
+            <div class="upload-icon">🪄</div>
+            <div class="upload-cta">Drop Context Document</div>
+            <div class="upload-hint">Upload PDF / DOCX for AI-assisted fill</div>
+          </label>
+          <input type="file" id="docFileInput" accept=".pdf,.docx">
+        </div>
         <div class="doc-badge" id="docBadge">
-            <span class="icon">✅</span>
-            <span class="name" id="docName">document.pdf</span>
-            <span class="chunks" id="docChunks">0 chunks</span>
+          <span class="doc-icon">✅</span>
+          <span class="doc-name" id="docName">document.pdf</span>
+          <span class="doc-chunks" id="docChunks">0 chunks</span>
         </div>
         <div id="uploadStatus"></div>
-    </div>
+      </div>
 
-    <!-- Data Section -->
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- TAB: PROFILES                                           -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="tab-content" id="tab-profiles">
     <div class="section">
-        <textarea id="userDataInput" class="config-input" placeholder='Paste structured JSON profile here...
-Example: { "fullName": "John" }'></textarea>
-        <button class="btn btn-primary" id="saveDataBtn" style="background: rgba(167, 139, 250, 0.15); border: 1px solid rgba(167, 139, 250, 0.4); color: #cbd5e1; box-shadow: none;">💾 Sync Custom Profile</button>
-        <div id="dataStatus" style="font-size:11px; color:#94a3b8; text-align:center; margin-top:6px;"></div>
-    </div>
 
-    <!-- Autofill Section -->
+      <!-- Profile List -->
+      <div class="profile-cards" id="profileCardsList"></div>
+
+      <!-- Add New Profile -->
+      <div class="mt-2">
+        <button class="btn btn-secondary btn-block" id="btnAddProfile">
+          ➕ Add New Profile
+        </button>
+      </div>
+
+      <!-- Import / Export -->
+      <div class="io-row mt-2">
+        <button class="btn btn-ghost btn-sm" id="btnImportProfiles" style="flex:1;">
+          📥 Import
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btnExportProfiles" style="flex:1;">
+          📤 Export
+        </button>
+      </div>
+      <input type="file" id="importFileInput" accept=".json" style="display:none;">
+
+      <!-- Profile Editor (shown when editing) -->
+      <div class="profile-editor" id="profileEditor">
+        <div class="divider"></div>
+        <div class="card-header">
+          <span class="card-title">
+            <span class="card-icon">✏️</span>
+            <span id="editorTitle">Edit Profile</span>
+          </span>
+          <button class="btn btn-ghost btn-sm" id="btnCloseEditor">✕</button>
+        </div>
+
+        <div class="editor-grid" id="editorGrid">
+          <!-- Dynamically populated -->
+        </div>
+
+        <div class="mt-2" style="display:flex;gap:8px;">
+          <button class="btn btn-primary btn-sm" id="btnSaveProfile" style="flex:1;">💾 Save</button>
+          <button class="btn btn-ghost btn-sm" id="btnCancelEdit">Cancel</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- TAB: SETTINGS                                           -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div class="tab-content" id="tab-settings">
     <div class="section">
-        <button class="btn btn-primary" id="autofillBtn" style="font-size: 15px; padding: 14px;">🚀 Launch Autofill Agent</button>
-        <button class="btn btn-danger" id="clearBtn">⚠️ Reset Extension State</button>
+
+      <!-- Toggle Settings -->
+      <div class="setting-row">
+        <div class="sr-info">
+          <div class="sr-label">Show Floating Button</div>
+          <div class="sr-desc">Quick-access FAB on every page</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="settingFab" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="sr-info">
+          <div class="sr-label">Fill Only Empty Fields</div>
+          <div class="sr-desc">Skip fields that already have values</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="settingFillEmpty">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row">
+        <div class="sr-info">
+          <div class="sr-label">AI Assist</div>
+          <div class="sr-desc">Use backend AI for complex fields</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="settingAiAssist">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div class="setting-row hidden" id="aiUrlSetting">
+        <div class="sr-info" style="width:100%;">
+          <div class="sr-label">AI Backend URL</div>
+          <input class="config-input mt-2" id="settingAiUrl" 
+                 value="https://form-filler-pi.vercel.app" 
+                 placeholder="https://your-backend.com">
+        </div>
+      </div>
+
+      <div class="setting-row">
+        <div class="sr-info">
+          <div class="sr-label">Debug Mode</div>
+          <div class="sr-desc">Show detailed logs in console</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="settingDebug">
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <!-- Keyboard Shortcut -->
+      <div class="divider"></div>
+      <div class="flex-between mb-2">
+        <span style="font-size:12px;font-weight:600;">Keyboard Shortcut</span>
+        <span class="shortcut-pill">
+          <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>F</kbd>
+        </span>
+      </div>
+
+      <!-- Domain Mappings -->
+      <div class="divider"></div>
+      <div class="card-header">
+        <span class="card-title">
+          <span class="card-icon">🌐</span> Learned Domain Mappings
+        </span>
+        <button class="btn btn-ghost btn-sm" id="btnClearDomainMaps">Clear All</button>
+      </div>
+      <div class="domain-list" id="domainMappingsList">
+        <div class="empty-state">
+          <div class="es-icon">🗺️</div>
+          No domain-specific mappings saved yet.
+        </div>
+      </div>
+
+      <!-- Privacy -->
+      <div class="divider"></div>
+      <div class="privacy-card">
+        <span class="priv-icon">🛡️</span>
+        <div class="priv-text">
+          <strong>Privacy-First Architecture</strong><br>
+          All profile data is stored locally in your browser. 
+          Nothing is sent to any server unless you enable AI Assist. 
+          Passwords, SSN, payment info, and OTPs are never autofilled.
+        </div>
+      </div>
+
+      <!-- Reset -->
+      <div class="mt-3">
+        <button class="btn btn-danger btn-block btn-sm" id="btnResetAll">
+          ⚠️ Reset All Extension Data
+        </button>
+      </div>
+
     </div>
+  </div>
 
-    <div id="status"></div>
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- STATUS BAR                                              -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <div id="statusBar"></div>
 
-    <script src="popup.js"></script>
+  <!-- Toast Container -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- SCRIPTS                                                 -->
+  <!-- ═══════════════════════════════════════════════════════ -->
+  <script src="modules/storage-manager.js"></script>
+  <script src="modules/ai-assist.js"></script>
+  <script src="popup.js"></script>
+
 </body>
 </html>

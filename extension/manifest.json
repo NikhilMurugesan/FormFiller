@@ -1,30 +1,56 @@
 {
   "manifest_version": 3,
-  "name": "AI Form Autofiller",
-  "version": "1.0",
-  "description": "Automatically fills forms using AI and your saved profile.",
+  "name": "FormFiller Pro",
+  "version": "2.0.0",
+  "description": "Smart, privacy-first form autofill with multi-profile support, confidence scoring, and optional AI assist.",
+
   "permissions": [
     "activeTab",
     "scripting",
     "tabs",
-    "storage"
+    "storage",
+    "contextMenus"
   ],
+
   "host_permissions": [
-    "*://*/*",
-    "file:///*"
+    "*://*/*"
   ],
+
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_title": "FormFiller Pro — Smart Autofill"
   },
+
   "background": {
     "service_worker": "background.js"
   },
+
   "content_scripts": [
     {
       "matches": ["*://*/*"],
-      "js": ["content.js"]
+      "js": [
+        "modules/field-detector.js",
+        "modules/mapping-engine.js",
+        "modules/safety-filter.js",
+        "modules/injection-engine.js",
+        "modules/form-type-classifier.js",
+        "modules/domain-intelligence.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
+
+  "commands": {
+    "trigger-autofill": {
+      "suggested_key": {
+        "default": "Alt+Shift+F",
+        "mac": "Alt+Shift+F"
+      },
+      "description": "Trigger FormFiller autofill on current page"
+    }
+  },
+
   "icons": {
     "16": "assets/icon16.png",
     "48": "assets/icon48.png",
