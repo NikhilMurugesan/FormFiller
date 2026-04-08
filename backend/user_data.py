@@ -101,7 +101,7 @@ USER_PROFILE = {
       "location": "Chennai, India",
       "start_date": "2024-09",
       "end_date": "Present",
-      "is_current": true,
+      "is_current": True,
       "description": "Enterprise logistics platform serving 21M+ daily package operations globally.",
       "achievements": [
         "Designed and built RESTful microservices using Java and Spring Boot for real-time package tracking and logistics orchestration, handling 50K+ API calls/day.",
@@ -132,7 +132,7 @@ USER_PROFILE = {
       "location": "Chennai, Tamil Nadu, India",
       "start_date": "2022-05",
       "end_date": "2024-09",
-      "is_current": false,
+      "is_current": False,
       "achievements": [
         "Engineered migration of 7+ screens from Struts-HTML to Angular and Spring Boot aligned with microservice architecture principles.",
         "Created 21+ tables and stored procedures in SYBASE to preserve continuity of data operations during transition.",
@@ -161,7 +161,7 @@ USER_PROFILE = {
       "location": "Chennai, Tamil Nadu, India",
       "start_date": "2022-01",
       "end_date": "2022-05",
-      "is_current": false,
+      "is_current": False,
       "achievements": [
         "Led a team of 6 developers to design, develop, and deploy a Recharge Management full stack application using Spring Boot, Angular, and MySQL.",
         "Coordinated project tasks, timelines, and priorities to improve execution.",
@@ -220,7 +220,7 @@ USER_PROFILE = {
       "Backend or AI/ML Engineering Roles"
     ],
     "preferred_employment_type": "Full-time",
-    "open_to_opportunities": true,
+    "open_to_opportunities": True,
     "preferred_locations": ["Chennai","Coimbatore","Bangalore","Hyderabad"],
     "remote_preference": "Hybrid"
   },
