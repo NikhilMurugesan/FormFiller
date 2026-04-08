@@ -111,6 +111,81 @@ var DropdownEngine = DropdownEngine || (() => {
     return 1 - (levenshtein(a, b) / maxLen);
   }
 
+  function tokenSet(value) {
+    return new Set(norm(value).split(' ').filter(Boolean));
+  }
+
+  function tokenOverlap(a, b) {
+    const left = tokenSet(a);
+    const right = tokenSet(b);
+    if (!left.size || !right.size) return 0;
+    let shared = 0;
+    left.forEach(t => { if (right.has(t)) shared++; });
+    return shared / Math.max(left.size, right.size);
+  }
+
+  function expandProfileValues(value) {
+    if (value === null || value === undefined || value === '' || (Array.isArray(value) && value.length === 0)) return [];
+    if (Array.isArray(value)) {
+      const out = value.slice(0, 10);
+      if (value.length) out.push(value.slice(0, 10).join(', '));
+      return out;
+    }
+    if (typeof value === 'boolean') return [value ? 'yes' : 'no'];
+    return [value];
+  }
+
+  function keyRelevance(field, key) {
+    const fieldText = [field.label, field.placeholder, field.name, field.ariaLabel, field.nearbyText, field.sectionHeading]
+      .filter(Boolean)
+      .join(' ');
+    let score = Math.round(tokenOverlap(fieldText, String(key).replace(/\./g, ' ')) * 12);
+    const intent = (typeof LearnedMemory !== 'undefined') ? LearnedMemory.normalizeIntent(field) : 'unknown';
+    if (intent && intent !== 'unknown' && String(key).toLowerCase().includes(intent)) score += 8;
+    return Math.min(score, 14);
+  }
+
+  function allowProfileValueForField(field, key, value) {
+    const intent = (typeof LearnedMemory !== 'undefined') ? LearnedMemory.normalizeIntent(field) : 'unknown';
+    const isBoolish = typeof value === 'boolean' || ['yes', 'no', 'true', 'false', '1', '0', 'y', 'n'].includes(String(value).toLowerCase().trim());
+    if (!isBoolish) return true;
+
+    const keyNorm = String(key).toLowerCase();
+    const intentHints = {
+      work_authorization: ['work_authorization', 'authorized', 'work authorization'],
+      sponsorship: ['sponsorship', 'visa', 'sponsor'],
+      relocation: ['relocation', 'relocate'],
+      remote_preference: ['remote', 'hybrid', 'work mode', 'on site'],
+    };
+    const hints = intentHints[intent];
+    if (!hints) return true;
+    return hints.some(hint => keyNorm.includes(hint));
+  }
+
+  function findBestProfilePoolMatch(field, profileData, options, context = {}) {
+    if (!profileData || !options?.length) return null;
+
+    const ranked = [];
+    for (const [key, rawValue] of Object.entries(profileData)) {
+      if (!allowProfileValueForField(field, key, rawValue)) continue;
+      for (const value of expandProfileValues(rawValue)) {
+        const match = matchOption(value, options, context);
+        if (!match) continue;
+        const confidence = Math.min(99, match.confidence + keyRelevance(field, key));
+        ranked.push({
+          ...match,
+          confidence,
+          profileKey: key,
+          profileValue: value,
+        });
+      }
+    }
+
+    if (!ranked.length) return null;
+    ranked.sort((a, b) => b.confidence - a.confidence);
+    return ranked[0];
+  }
+
   // ═══════════════════════════════════════════════════════════
   // CORE: Match a value against dropdown options
   // ═══════════════════════════════════════════════════════════
@@ -462,7 +537,26 @@ var DropdownEngine = DropdownEngine || (() => {
       }
     }
 
-    // 4) No match → skip
+    // 4) Match against all available profile values
+    const poolMatch = findBestProfilePoolMatch(field, profileData, options, { fieldIntent: intent, domain });
+    if (poolMatch) {
+      if (poolMatch.confidence >= 78) {
+        return {
+          field, action: 'select', optionValue: poolMatch.optionValue, optionText: poolMatch.optionText,
+          confidence: poolMatch.confidence, matchType: `profile_pool_${poolMatch.matchType}`,
+          reason: `Profile pool: ${poolMatch.profileKey} → ${poolMatch.optionText}`,
+        };
+      }
+      if (poolMatch.confidence >= 60) {
+        return {
+          field, action: 'review', optionValue: poolMatch.optionValue, optionText: poolMatch.optionText,
+          confidence: poolMatch.confidence, matchType: `profile_pool_${poolMatch.matchType}`,
+          reason: `Low-confidence profile pool match for ${poolMatch.profileKey}`,
+        };
+      }
+    }
+
+    // 5) No match → skip
     return {
       field, action: 'skip', optionValue: null, optionText: null,
       confidence: 0, matchType: null,

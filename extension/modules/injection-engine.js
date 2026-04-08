@@ -245,18 +245,44 @@ var InjectionEngine = InjectionEngine || (() => {
     const failed = [];
 
     for (const mapping of mappings) {
-      if (!mapping.value || mapping.status === 'blocked') {
-        skipped.push({ id: mapping.field.id, reason: mapping.status || 'no value' });
+      const fieldId = mapping.field?.id || mapping.fieldId;
+      const fieldLabel = mapping.field?.label || mapping.field?.placeholder || mapping.field?.name || fieldId;
+      const hasValue = mapping.value !== null && mapping.value !== undefined && mapping.value !== '';
+
+      if (!hasValue || mapping.status === 'blocked') {
+        let reason = mapping.reason || mapping.status || 'no value';
+        if (!hasValue && mapping.status === 'matched_no_value') reason = 'No stored value available';
+        if (!hasValue && mapping.status === 'unmatched') reason = 'No suggestion found';
+        if (!hasValue && mapping.status === 'uncertain') reason = mapping.reason || 'Marked for review';
+
+        skipped.push({
+          id: fieldId,
+          fieldLabel,
+          reason,
+          suggestedValue: hasValue ? mapping.value : null,
+          status: mapping.status || 'skipped',
+        });
         continue;
       }
 
-      const result = inject(mapping.field.id, mapping.value, options);
+      const result = inject(fieldId, mapping.value, options);
       if (result.success) {
-        filled.push({ id: mapping.field.id, value: mapping.value });
+        filled.push({ id: fieldId, fieldLabel, value: mapping.value });
       } else if (result.reason === 'Field not empty' || result.reason === 'Already filled') {
-        skipped.push({ id: mapping.field.id, reason: result.reason });
+        skipped.push({
+          id: fieldId,
+          fieldLabel,
+          reason: result.reason,
+          suggestedValue: mapping.value,
+          status: 'skipped',
+        });
       } else {
-        failed.push({ id: mapping.field.id, reason: result.reason });
+        failed.push({
+          id: fieldId,
+          fieldLabel,
+          reason: result.reason,
+          suggestedValue: mapping.value,
+        });
       }
     }
 

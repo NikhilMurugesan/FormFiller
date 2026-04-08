@@ -62,6 +62,55 @@ function shouldSendFieldToBackend(mapping) {
   return (mapping.confidence || 0) < AI_REVIEW_CONFIDENCE_THRESHOLD;
 }
 
+function hasDisplayValue(value) {
+  return value !== null && value !== undefined && value !== '';
+}
+
+function getFillOutcomeReason(mapping) {
+  if (!mapping) return '';
+  if (mapping.skipReason) return mapping.skipReason;
+  if (mapping.failureReason) return mapping.failureReason;
+  if (mapping.backendStatus === 'skipped') return mapping.reason || 'Skipped by backend';
+  return '';
+}
+
+function mergeFillResponseIntoMappings(mappings, fillResponse) {
+  if (!Array.isArray(mappings) || !fillResponse) return;
+
+  const filledById = new Map((fillResponse.filled || []).map(entry => [entry.id, entry]));
+  const skippedById = new Map((fillResponse.skipped || []).map(entry => [entry.id, entry]));
+  const failedById = new Map((fillResponse.failed || []).map(entry => [entry.id, entry]));
+
+  for (const mapping of mappings) {
+    mapping.fillState = null;
+    delete mapping.skipReason;
+    delete mapping.failureReason;
+
+    const filled = filledById.get(mapping.fieldId);
+    const skipped = skippedById.get(mapping.fieldId);
+    const failed = failedById.get(mapping.fieldId);
+
+    if (filled) {
+      mapping.fillState = 'filled';
+      if (hasDisplayValue(filled.value)) mapping.value = filled.value;
+      continue;
+    }
+
+    if (skipped) {
+      mapping.fillState = 'skipped';
+      mapping.skipReason = skipped.reason || '';
+      if (hasDisplayValue(skipped.suggestedValue)) mapping.value = skipped.suggestedValue;
+      continue;
+    }
+
+    if (failed) {
+      mapping.fillState = 'failed';
+      mapping.failureReason = failed.reason || '';
+      if (hasDisplayValue(failed.suggestedValue)) mapping.value = failed.suggestedValue;
+    }
+  }
+}
+
 async function sendToBackground(message) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, response => {
@@ -439,7 +488,9 @@ async function handleAIAutofill() {
     const filled = fillResponse.filled?.length || 0;
     const total = scanResponse.totalFields;
 
+    mergeFillResponseIntoMappings(scanResponse.mappings, fillResponse);
     renderFillResults(fillResponse);
+    renderFieldList(scanResponse.mappings, scanResponse.blocked);
     showProgress(filled, total);
     
     chrome.runtime.sendMessage({
@@ -533,7 +584,9 @@ async function handleAIAutofillV2() {
     const filled = fillResponse.filled?.length || 0;
     const total = scanResponse.totalFields;
 
+    mergeFillResponseIntoMappings(scanResponse.mappings, fillResponse);
     renderFillResults(fillResponse);
+    renderFieldList(scanResponse.mappings, scanResponse.blocked);
     showProgress(filled, total);
 
     chrome.runtime.sendMessage({
@@ -582,6 +635,12 @@ async function handleAutofill(onlyEmpty) {
     const filled = response.filled?.length || 0;
     const total = (response.filled?.length || 0) + (response.skipped?.length || 0) + 
                   (response.blocked?.length || 0) + (response.failed?.length || 0);
+
+    if (response.mappings) {
+      mergeFillResponseIntoMappings(response.mappings, response);
+      currentScanResults = response;
+      renderFieldList(response.mappings, response.blocked);
+    }
 
     // Show stats
     renderFillResults(response);
@@ -678,7 +737,7 @@ function renderFillResults(data) {
   }
 }
 
-function renderFieldList(mappings, blocked) {
+function renderFieldListLegacy(mappings, blocked) {
   const card = document.getElementById('fieldReviewCard');
   card.classList.remove('hidden');
 
@@ -839,6 +898,219 @@ function renderFieldList(mappings, blocked) {
         renderFieldList(mappings, blocked);
 
         if (target.status === 'matched' && target.value !== null && target.value !== undefined && target.value !== '') {
+          await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: target.value });
+          showToast('Backend suggestion filled', 'success');
+        } else if (target.status === 'uncertain') {
+          showToast('Suggestion marked for review', 'warning');
+        } else {
+          showToast('No confident suggestion found', 'warning');
+          btn.textContent = 'AI Predict';
+        }
+        return;
+      } catch (err) {
+        showToast(err.message, 'error');
+        btn.textContent = 'AI Predict';
+      }
+    });
+  });
+}
+
+function renderFieldList(mappings, blocked) {
+  const card = document.getElementById('fieldReviewCard');
+  card.classList.remove('hidden');
+
+  const list = document.getElementById('fieldList');
+  const fieldCount = document.getElementById('fieldCount');
+  fieldCount.textContent = `${mappings?.length || 0} fields`;
+
+  if (!mappings || mappings.length === 0) {
+    list.innerHTML = '<div class="empty-state">No form fields detected</div>';
+    return;
+  }
+
+  list.innerHTML = mappings.map(m => {
+    const conf = m.confidence || 0;
+    const confClass = conf >= AI_MATCH_CONFIDENCE_THRESHOLD ? 'high' : conf >= AI_UNCERTAIN_CONFIDENCE_THRESHOLD ? 'medium' : 'low';
+    const outcomeReason = getFillOutcomeReason(m);
+    const statusClass = m.fillState === 'failed'
+      ? 'low'
+      : m.fillState === 'skipped' || m.backendStatus === 'skipped'
+        ? 'medium'
+        : m.status === 'matched'
+          ? confClass
+          : m.status === 'uncertain'
+            ? 'medium'
+            : 'blocked';
+    const valueStr = m.value !== undefined && m.value !== null ? String(m.value) : '';
+    const hasValue = hasDisplayValue(m.value);
+    const displayValue = hasValue ? truncate(valueStr, 20) : '-';
+    const descriptor = m.profileKey || m.detectedIntent || m.reason || 'unmatched';
+    const sourceReason = m.reason && m.reason !== outcomeReason ? m.reason : '';
+
+    let sourceIcon = '?';
+    if (m.matchSource === 'profile' || m.matchSource === 'deterministic') sourceIcon = 'P';
+    else if (m.matchSource === 'learned' || m.matchSource === 'cache') sourceIcon = 'L';
+    else if (m.matchSource === 'domain') sourceIcon = 'D';
+    else if (m.matchSource === 'ai' || m.matchSource === 'rag') sourceIcon = 'AI';
+    else if (m.matchSource === 'decision') sourceIcon = 'M';
+
+    const stateLabel = m.fillState === 'skipped' || m.backendStatus === 'skipped'
+      ? `<span style="color:var(--warning)">Skipped</span>`
+      : m.fillState === 'failed'
+        ? `<span style="color:var(--error)">Failed</span>`
+        : m.status === 'matched'
+          ? `<span>${escapeHtml(descriptor)}</span>`
+          : m.status === 'uncertain'
+            ? `<span style="color:var(--warning)">Review: ${escapeHtml(descriptor)}</span>`
+            : `<span style="color:var(--error)">Unmatched</span>`;
+
+    const extraMeta = [
+      sourceReason ? `<div class="fr-match" style="font-size:10px;color:var(--text-muted);margin-top:2px;">${escapeHtml(truncate(sourceReason, 70))}</div>` : '',
+      outcomeReason ? `<div class="fr-match" style="font-size:10px;color:var(--warning);margin-top:2px;">Skip reason: ${escapeHtml(truncate(outcomeReason, 70))}</div>` : '',
+      hasValue && (m.fillState === 'skipped' || m.backendStatus === 'skipped' || m.fillState === 'failed' || m.status === 'unmatched')
+        ? `<div class="fr-match" style="font-size:10px;color:var(--accent-purple);margin-top:2px;">Suggestion: ${escapeHtml(truncate(valueStr, 70))}</div>`
+        : '',
+    ].join('');
+
+    return `
+      <div class="field-row" style="flex-direction:column;align-items:stretch;gap:8px" data-field-id="${m.fieldId}">
+        <div style="display:flex;align-items:center;width:100%;gap:8px;">
+          <div class="fr-status ${statusClass}"></div>
+          <div class="fr-info" style="flex:1">
+            <div class="fr-name" title="${m.fieldLabel}">${truncate(m.fieldLabel, 28)}</div>
+            <div class="fr-match" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
+              <span title="Source">${escapeHtml(sourceIcon)}</span>
+              ${stateLabel}
+            </div>
+            ${extraMeta}
+          </div>
+          ${hasValue ? `<div class="fr-value" style="flex:1;text-align:right;" title="${escapeHtml(valueStr)}">${escapeHtml(displayValue)}</div>` : ''}
+          ${conf > 0 ? `<span class="fr-confidence ${confClass}" style="margin:0;">${conf}%</span>` : ''}
+        </div>
+        <div class="fr-actions" style="display:flex;gap:4px;align-self:flex-end;">
+          <button class="btn btn-primary btn-sm fr-fill" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">Fill</button>
+          <button class="btn btn-secondary btn-sm fr-ai" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">AI Predict</button>
+          ${hasValue ? `<button class="btn btn-ghost btn-sm fr-copy" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">Copy</button>` : ''}
+          <button class="btn btn-ghost btn-sm fr-edit" data-id="${m.fieldId}" data-val="${escapeHtml(valueStr)}" style="font-size:10px;padding:2px 6px;">Edit</button>
+          <button class="btn btn-ghost btn-sm fr-clear" data-id="${m.fieldId}" style="font-size:10px;padding:2px 6px;">Clear</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const blockedSection = document.getElementById('blockedSection');
+  const blockedList = document.getElementById('blockedList');
+  if (blocked && blocked.length > 0) {
+    blockedSection.classList.remove('hidden');
+    blockedList.innerHTML = blocked.map(b => `
+      <div class="blocked-row">
+        <span class="lock-icon">Lock</span>
+        <span style="flex:1">${b.fieldLabel || b.fieldId}</span>
+        <span style="font-size:10px;color:var(--text-muted)">${b.reason}</span>
+      </div>
+    `).join('');
+  } else {
+    blockedSection.classList.add('hidden');
+  }
+
+  list.querySelectorAll('.fr-fill').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      const target = mappings.find(m => m.fieldId === fieldId);
+      if (!target || !hasDisplayValue(target.value)) return showToast('No value to fill', 'warning');
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: target.value });
+        showToast('Filled', 'success');
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  });
+
+  list.querySelectorAll('.fr-copy').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      const target = mappings.find(m => m.fieldId === fieldId);
+      if (!target || !hasDisplayValue(target.value)) return showToast('No suggestion to copy', 'warning');
+      try {
+        await navigator.clipboard.writeText(String(target.value));
+        showToast('Suggestion copied', 'success');
+      } catch (_) {
+        showToast('Copy failed', 'error');
+      }
+    });
+  });
+
+  list.querySelectorAll('.fr-clear').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        await sendToContentScript(tab.id, { action: 'CLEAR_SINGLE', fieldId });
+        showToast('Cleared', 'info');
+      } catch (err) { showToast(err.message, 'error'); }
+    });
+  });
+
+  list.querySelectorAll('.fr-edit').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      const currentVal = btn.dataset.val;
+      const newVal = prompt(`Edit value for this field:`, currentVal);
+      if (newVal !== null) {
+        const target = mappings.find(m => m.fieldId === fieldId);
+        if (target) {
+          target.value = newVal;
+          target.status = 'matched';
+          target.fillState = null;
+          delete target.skipReason;
+          delete target.failureReason;
+        }
+        renderFieldList(mappings, blocked);
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: newVal });
+          showToast('Updated', 'success');
+        } catch (_) {}
+      }
+    });
+  });
+
+  list.querySelectorAll('.fr-ai').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const fieldId = btn.dataset.id;
+      const target = mappings.find(m => m.fieldId === fieldId);
+      if (!target || !currentScanResults) return;
+
+      btn.textContent = '...';
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab) throw new Error('No active tab');
+        const profile = await StorageManager.getActiveProfile();
+        const settings = await StorageManager.getSettings();
+        const learnedEntries = await StorageManager.getLearnedMemory();
+        const domain = new URL(tab.url).hostname;
+        const domainMappings = await StorageManager.getDomainMappings(domain);
+        const analyzeRequest = buildAnalyzeRequest(
+          currentScanResults,
+          [target],
+          tab,
+          profile,
+          settings,
+          learnedEntries,
+          domainMappings,
+          'single_field_review'
+        );
+        const aiResponse = await sendToBackground({
+          action: 'ANALYZE_FIELDS',
+          request: analyzeRequest,
+        });
+
+        if (aiResponse?.error) throw new Error(aiResponse.error);
+
+        applyAnalyzeResponseToMappings(currentScanResults, aiResponse);
+        renderFieldList(mappings, blocked);
+
+        if (target.status === 'matched' && hasDisplayValue(target.value)) {
           await sendToContentScript(tab.id, { action: 'FILL_SINGLE', fieldId, value: target.value });
           showToast('Backend suggestion filled', 'success');
         } else if (target.status === 'uncertain') {

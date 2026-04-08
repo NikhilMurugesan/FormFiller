@@ -28,8 +28,11 @@ INTENT_PATTERNS = [
     ("website", [r"website", r"homepage", r"\burl\b"]),
     ("education_level", [r"degree", r"education", r"qualification"]),
     ("experience_years", [r"years?.?of.?exp", r"\byoe\b", r"experience"]),
+    ("employment_type", [r"employment.?type", r"full.?time", r"part.?time", r"contract", r"intern(ship)?"]),
     ("work_authorization", [r"authorized?.?to.?work", r"work.?author", r"right.?to.?work"]),
     ("sponsorship", [r"sponsor", r"h-?1b", r"visa"]),
+    ("relocation", [r"relocat"]),
+    ("remote_preference", [r"\bremote\b", r"hybrid", r"on.?site", r"work.?mode"]),
     ("salary_expectation", [r"salary", r"compensation", r"ctc", r"expected.?pay"]),
     ("summary", [r"summary", r"about", r"cover.?letter", r"why.?join"]),
     ("skills", [r"skills", r"expertise", r"competenc"]),
@@ -56,6 +59,11 @@ PROFILE_ALIASES = {
     "website": ["website"],
     "education_level": ["highest_degree"],
     "experience_years": ["years_of_experience"],
+    "employment_type": ["employment_type_preference", "preferred_employment_type"],
+    "work_authorization": ["work_authorization", "authorized_to_work"],
+    "sponsorship": ["sponsorship_required", "requires_sponsorship"],
+    "relocation": ["willing_to_relocate", "relocation"],
+    "remote_preference": ["remote_preference", "preferred_work_mode"],
     "summary": ["summary"],
     "skills": ["skills"],
     "gender": ["gender"],
@@ -93,6 +101,7 @@ def normalize_option(option: Any) -> Dict[str, Any] | None:
         "value": value,
         "selected": bool(getattr(option, "selected", False) if not isinstance(option, dict) else option.get("selected")),
         "checked": bool(getattr(option, "checked", False) if not isinstance(option, dict) else option.get("checked")),
+        "disabled": bool(getattr(option, "disabled", False) if not isinstance(option, dict) else option.get("disabled")),
     }
 
 

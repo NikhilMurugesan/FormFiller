@@ -139,6 +139,10 @@ if (typeof window._ffProInitialized === 'undefined') {
     });
   }
 
+  function hasUsableValue(value) {
+    return value !== null && value !== undefined && value !== '';
+  }
+
   // ═══════════════════════════════════════════════════════════
   // SECTION 1: Floating Action Button (FAB)
   // ═══════════════════════════════════════════════════════════
@@ -459,7 +463,12 @@ if (typeof window._ffProInitialized === 'undefined') {
     return {
       filled: injectionResult.filled,
       skipped: injectionResult.skipped,
-      blocked: blocked.map(b => ({ id: b.field.id, reason: b.reason })),
+      blocked: blocked.map(b => ({
+        fieldId: b.field.id,
+        fieldLabel: b.field.label || b.field.name || b.field.id,
+        reason: b.reason,
+        field: serializeField(b.field),
+      })),
       failed: injectionResult.failed,
       formType,
       totalFields: fields.length,
@@ -555,14 +564,20 @@ if (typeof window._ffProInitialized === 'undefined') {
               request.domainMappings || {},
               false
             );
+            const pageContext = buildPageContext(result.formType, result.totalFields);
+            const formContext = buildPrimaryFormContext(result.mappings.map(m => m.field), result.formType);
             sendResponse({
               status: 'success',
+              pageContext,
+              formContext,
               filled: result.filled,
               skipped: result.skipped,
               blocked: result.blocked,
               failed: result.failed,
               formType: result.formType,
               totalFields: result.totalFields,
+              detectedFields: result.mappings.map(m => serializeField(m.field)),
+              mappings: result.mappings.map(serializeMapping),
             });
             break;
           }
@@ -573,14 +588,20 @@ if (typeof window._ffProInitialized === 'undefined') {
               request.domainMappings || {},
               true
             );
+            const pageContext = buildPageContext(result.formType, result.totalFields);
+            const formContext = buildPrimaryFormContext(result.mappings.map(m => m.field), result.formType);
             sendResponse({
               status: 'success',
+              pageContext,
+              formContext,
               filled: result.filled,
               skipped: result.skipped,
               blocked: result.blocked,
               failed: result.failed,
               formType: result.formType,
               totalFields: result.totalFields,
+              detectedFields: result.mappings.map(m => serializeField(m.field)),
+              mappings: result.mappings.map(serializeMapping),
             });
             break;
           }
@@ -608,29 +629,67 @@ if (typeof window._ffProInitialized === 'undefined') {
 
           case 'APPLY_MAPPINGS': {
             // Apply a pre-computed array of mappings (Static + AI)
-            let filledCount = 0;
             const filledArr = [];
             const skippedArr = [];
+            const failedArr = [];
 
             const safeFields = await FieldDetector.scanWithRetry(_filledFieldIds);
             const safeDOMFields = SafetyFilter.filterFields(safeFields).safe;
 
             for (const m of request.mappings) {
-               if (m.status === 'matched' && m.value !== null && m.value !== undefined) {
-                  const targetDOM = safeDOMFields.find(f => f.id === m.fieldId);
-                  if (targetDOM) {
-                     // Checkbox / Dropdown logic bypassing via DecisionEngine could be complex here.
-                     // For now, InjectionEngine handles basic radio/checkbox/select/text matching.
-                     const r = InjectionEngine.inject(m.fieldId, m.value, { force: true });
-                     if (r.success) {
-                       _filledFieldIds.add(m.fieldId);
-                       filledArr.push(m.fieldId);
-                       filledCount++;
-                     } else {
-                       skippedArr.push(m.fieldId);
-                     }
-                  }
-               }
+              const fieldLabel = m.fieldLabel || m.field?.label || m.field?.fieldLabel || m.fieldId;
+              const hasValue = hasUsableValue(m.value);
+              const targetDOM = safeDOMFields.find(f => f.id === m.fieldId);
+
+              if (m.status === 'matched' && hasValue) {
+                if (!targetDOM) {
+                  failedArr.push({
+                    id: m.fieldId,
+                    fieldLabel,
+                    reason: 'Element not found',
+                    suggestedValue: m.value,
+                  });
+                  continue;
+                }
+
+                // Checkbox / Dropdown logic bypassing via DecisionEngine could be complex here.
+                // For now, InjectionEngine handles basic radio/checkbox/select/text matching.
+                const r = InjectionEngine.inject(m.fieldId, m.value, { force: true });
+                if (r.success) {
+                  _filledFieldIds.add(m.fieldId);
+                  filledArr.push({ id: m.fieldId, fieldLabel, value: m.value });
+                } else if (r.reason === 'Field not empty' || r.reason === 'Already filled') {
+                  skippedArr.push({
+                    id: m.fieldId,
+                    fieldLabel,
+                    reason: r.reason,
+                    suggestedValue: m.value,
+                    status: 'skipped',
+                  });
+                } else {
+                  failedArr.push({
+                    id: m.fieldId,
+                    fieldLabel,
+                    reason: r.reason,
+                    suggestedValue: m.value,
+                  });
+                }
+                continue;
+              }
+
+              let reason = m.skipReason || m.reason || 'Not selected for autofill';
+              if (!hasValue && m.status === 'matched_no_value') reason = 'No stored value available';
+              else if (!hasValue && m.status === 'unmatched') reason = 'No suggestion found';
+              else if (m.status === 'uncertain') reason = m.reason || 'Marked for review';
+              else if (m.backendStatus === 'skipped') reason = m.reason || 'Skipped by backend';
+
+              skippedArr.push({
+                id: m.fieldId,
+                fieldLabel,
+                reason,
+                suggestedValue: hasValue ? m.value : null,
+                status: m.backendStatus || m.status || 'skipped',
+              });
             }
 
             // Start correction watchers
@@ -642,7 +701,7 @@ if (typeof window._ffProInitialized === 'undefined') {
                filled: filledArr,
                skipped: skippedArr,
                blocked: [],
-               failed: []
+               failed: failedArr
             });
             break;
           }
