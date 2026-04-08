@@ -25,8 +25,6 @@
     <img src="https://img.shields.io/github/last-commit/NikhilMurugesan/FormFiller?style=for-the-badge" alt="GitHub last commit">
   </a>
   <img src="https://img.shields.io/badge/version-2.1.0-0ea5e9?style=for-the-badge" alt="Version 2.1.0">
-  <img src="https://img.shields.io/badge/build-placeholder-64748b?style=for-the-badge" alt="Build status placeholder">
-  <img src="https://img.shields.io/badge/downloads-placeholder-64748b?style=for-the-badge" alt="Downloads placeholder">
 </p>
 
 <p align="center">
