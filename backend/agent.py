@@ -753,6 +753,40 @@ async def _run_json_llm(
 
 
 def _fallback_optimized_prompt(request: OptimizePromptRequest) -> str:
+    output_format = _norm(request.output_format)
+    wants_direct_prompt = any(
+        marker in output_format
+        for marker in ("direct prompt", "plain prompt", "single prompt", "prompt only", "direct rewrite")
+    )
+    wants_light_touch = (
+        wants_direct_prompt
+        or _infer_prompt_kind(request) == "follow_up"
+        or any(marker in _norm(" ".join(request.constraints)) for marker in ("concise", "short", "light", "do not expand", "don't expand"))
+    )
+
+    if wants_light_touch:
+        source = " ".join((request.source_prompt or "").split()).strip()
+        if not source:
+            return ""
+
+        source = source[0].upper() + source[1:] if source else source
+        source = source.rstrip()
+        if source and source[-1] not in ".!?":
+            source += "."
+
+        lines: List[str] = []
+        if request.conversation_context or request.project_context:
+            lines.append("Use the current conversation context.")
+        lines.append(source)
+
+        constraint_text = _norm(" ".join(request.constraints))
+        if "concise" not in constraint_text and "short" not in constraint_text:
+            lines.append("Keep it concise and user-friendly.")
+        if "context" not in constraint_text and (request.conversation_context or request.project_context):
+            lines.append("Make sure it fits the existing context.")
+
+        return " ".join(lines)
+
     sections: List[str] = []
 
     if request.goal:

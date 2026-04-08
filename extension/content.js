@@ -407,6 +407,14 @@ if (typeof window._ffProInitialized === 'undefined') {
         source_prompt: sourcePrompt,
         project_context: projectContext || null,
         conversation_context: conversationContext,
+        goal: 'Improve this prompt without over-expanding it',
+        output_format: 'Direct rewrite of the prompt only',
+        constraints: [
+          'Keep the prompt concise and user-friendly.',
+          'Do not turn it into a long prompt template unless explicitly requested.',
+          'Preserve the original request and adapt it to the current conversation context.',
+          'For follow-up prompts, make references explicit so the prompt stands on its own.',
+        ],
         target_models: targetModels,
         preserve_intent: response?.promptSettings?.preserveIntent !== false,
         explanation_style: 'concise',
@@ -424,9 +432,8 @@ if (typeof window._ffProInitialized === 'undefined') {
 
     const sourceMeta = getPagePromptSource();
     const context = [
-      isTravelGptContext() ? 'Context: Travel GPT conversation on ChatGPT.' : 'Context: ChatGPT composer.',
-      sourceMeta.editableLabel ? `Field: ${sourceMeta.editableLabel}` : '',
-      document.title ? `Page: ${document.title}` : '',
+      isTravelGptContext() ? 'Travel planning conversation in ChatGPT.' : 'ChatGPT conversation.',
+      sourceMeta.editableLabel && sourceMeta.editableLabel !== 'Chat with ChatGPT' ? `Focused input: ${sourceMeta.editableLabel}` : '',
     ].filter(Boolean).join('\n');
 
     const previousLabel = button.getAttribute('aria-label') || 'Enhance prompt';
