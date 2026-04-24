@@ -25,16 +25,27 @@ var StorageManager = (() => {
     LEARNED_MEMORY: 'ff_learned_memory',  // checkbox/dropdown/correction memory
   };
 
+  const BACKEND_PROFILE_ID = 'backend_user_data';
+
   // ─── Default Profile Template ────────────────────────────────
   const DEFAULT_PROFILE_DATA = {
     full_name: '', first_name: '', last_name: '',
     email: '', phone: '',
+    country_code: '', phone_number_digits: '',
     address: '', city: '', state: '', zip: '', country: '',
-    current_company: '', current_title: '',
+    location: '', current_company: '', current_title: '', desired_title: '',
     linkedin: '', portfolio: '', github: '', website: '',
     highest_degree: '', school: '', major: '', graduation_year: '',
     years_of_experience: '', skills: '', summary: '',
-    gender: '', dob: '',
+    headline: '', cover_letter: '', message_to_recruiter: '',
+    employment_type_preference: '', preferred_employment_type: '',
+    work_authorization: '', sponsorship_required: '', willing_to_relocate: '',
+    remote_preference: '', preferred_locations: '',
+    veteran_status: '', armed_forces_service: '', disability_status: '',
+    languages_known: '', phone_type: '', hear_about: '',
+    shift_preference: '', travel_willingness: '', salary_expectation: '',
+    notice_period: '', start_date: '',
+    gender: '', dob: '', date_of_birth: '',
   };
 
   // ─── Default Settings ────────────────────────────────────────
@@ -108,6 +119,23 @@ var StorageManager = (() => {
 
   function _generateId() {
     return _generateEntityId('profile');
+  }
+
+  function _sanitizeProfileData(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return {};
+
+    const out = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (!key || value === null || value === undefined) continue;
+      if (Array.isArray(value)) {
+        out[key] = value.map(item => String(item ?? '').trim()).filter(Boolean).join(', ');
+      } else if (typeof value === 'object') {
+        out[key] = JSON.stringify(value);
+      } else {
+        out[key] = String(value).trim();
+      }
+    }
+    return out;
   }
 
   function _normalizeTags(tags) {
@@ -286,6 +314,46 @@ var StorageManager = (() => {
     };
     await saveProfile(dup);
     return dup;
+  }
+
+  async function upsertBackendProfile(payload, options = {}) {
+    const incomingProfile = payload?.profile || payload || {};
+    const incomingData = _sanitizeProfileData(incomingProfile.data || payload?.data || {});
+    if (Object.keys(incomingData).length === 0) {
+      throw new Error('Backend profile did not include any autofill values');
+    }
+
+    const profiles = await getProfiles();
+    const profileId = incomingProfile.id || BACKEND_PROFILE_ID;
+    const idx = profiles.findIndex(p => p.id === profileId);
+    const existing = idx >= 0 ? profiles[idx] : null;
+    const now = new Date().toISOString();
+    const merged = {
+      id: profileId,
+      name: incomingProfile.name || existing?.name || 'Backend User Data',
+      icon: incomingProfile.icon || existing?.icon || 'DB',
+      data: {
+        ...DEFAULT_PROFILE_DATA,
+        ...(existing?.data || {}),
+        ...incomingData,
+      },
+      source: incomingProfile.source || existing?.source || 'backend_user_data',
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+    };
+
+    if (idx >= 0) {
+      profiles[idx] = merged;
+    } else {
+      profiles.unshift(merged);
+    }
+
+    const storagePayload = { [KEYS.PROFILES]: profiles };
+    if (options.activate !== false) {
+      storagePayload[KEYS.ACTIVE_PROFILE] = merged.id;
+    }
+    await _set(storagePayload);
+    return merged;
   }
 
   // ─── Import / Export ─────────────────────────────────────────
@@ -577,10 +645,11 @@ var StorageManager = (() => {
 
   // ─── Expose ──────────────────────────────────────────────────
   return {
-    KEYS, DEFAULT_PROFILE_DATA, DEFAULT_PROMPT_SETTINGS,
+    KEYS, DEFAULT_PROFILE_DATA, DEFAULT_PROMPT_SETTINGS, BACKEND_PROFILE_ID,
     init,
     getProfiles, getActiveProfileId, getActiveProfile, setActiveProfile,
     getProfileById, saveProfile, createProfile, deleteProfile, duplicateProfile,
+    upsertBackendProfile,
     exportProfiles, importProfiles,
     getDomainMappings, saveDomainMapping, getAllDomainMappings,
     deleteDomainMapping, clearDomainMappings,

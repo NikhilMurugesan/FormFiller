@@ -14,6 +14,25 @@ const AIAssist = (() => {
   const DEFAULT_API_URL = 'https://form-filler-pi.vercel.app';
   const SESSION_ID = 'formfiller_session';
 
+  async function getJson(path, apiUrl, timeoutMs = 10000) {
+    const baseUrl = apiUrl || DEFAULT_API_URL;
+    const response = await fetch(`${baseUrl}${path}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+    if (!response.ok) {
+      let details = response.statusText;
+      try {
+        const text = await response.text();
+        if (text) details = text;
+      } catch (_) {}
+      throw new Error(`API Error: ${response.status} ${details}`);
+    }
+
+    return await response.json();
+  }
+
   async function postJson(path, payload, apiUrl, timeoutMs = 30000) {
     const baseUrl = apiUrl || DEFAULT_API_URL;
     const response = await fetch(`${baseUrl}${path}`, {
@@ -126,6 +145,21 @@ const AIAssist = (() => {
     }
   }
 
+  async function getUserProfile(apiUrl) {
+    try {
+      const data = await getJson('/user-profile', apiUrl, 10000);
+      return { ...data, error: null };
+    } catch (err) {
+      console.error('[AIAssist] getUserProfile failed:', err.message);
+      return {
+        status: 'error',
+        profile: null,
+        field_count: 0,
+        error: err.message,
+      };
+    }
+  }
+
   /**
    * Check if the backend is reachable.
    * @returns {boolean}
@@ -196,6 +230,7 @@ const AIAssist = (() => {
     analyzeFields,
     optimizePrompt,
     evaluatePrompt,
+    getUserProfile,
     isAvailable,
     uploadDocument,
     getDocumentStatus,

@@ -147,6 +147,62 @@ if (typeof window._ffProInitialized === 'undefined') {
     return value !== null && value !== undefined && value !== '';
   }
 
+  function decisionFieldLabel(decision) {
+    const field = decision?.field || {};
+    return field.label || field.placeholder || field.name || field.id || field.fieldId || 'field';
+  }
+
+  function serializeDecisionFilled(decision, fallbackValue = null) {
+    const field = decision?.field || {};
+    const rawValue = decision?.optionText || decision?.optionValue || decision?.value;
+    const value = rawValue ?? fallbackValue;
+    return {
+      id: field.id || field.fieldId,
+      fieldLabel: decisionFieldLabel(decision),
+      value,
+    };
+  }
+
+  function serializeDecisionSkipped(decision, status = 'skipped') {
+    const field = decision?.field || {};
+    return {
+      id: field.id || field.fieldId,
+      fieldLabel: decisionFieldLabel(decision),
+      reason: decision?.reason || status,
+      suggestedValue: decision?.optionText || decision?.optionValue || decision?.value || null,
+      status,
+    };
+  }
+
+  function decisionResultsToFillResponse(applied) {
+    if (!applied) {
+      return { filled: [], skipped: [], blocked: [] };
+    }
+
+    const filled = [
+      ...(applied.checkboxes?.selected || []).map(decision => serializeDecisionFilled(decision, decision.value === false ? 'No' : 'Yes')),
+      ...(applied.dropdowns?.selected || []).map(decision => serializeDecisionFilled(decision)),
+      ...(applied.radios?.selected || []).map(decision => serializeDecisionFilled(decision)),
+    ].filter(item => item.id);
+
+    const skipped = [
+      ...(applied.checkboxes?.skipped || []).map(decision => serializeDecisionSkipped(decision)),
+      ...(applied.checkboxes?.uncertain || []).map(decision => serializeDecisionSkipped(decision, 'uncertain')),
+      ...(applied.dropdowns?.skipped || []).map(decision => serializeDecisionSkipped(decision)),
+      ...(applied.dropdowns?.uncertain || []).map(decision => serializeDecisionSkipped(decision, 'uncertain')),
+      ...(applied.radios?.skipped || []).map(decision => serializeDecisionSkipped(decision)),
+    ].filter(item => item.id);
+
+    const blocked = (applied.checkboxes?.blocked || []).map(decision => ({
+      fieldId: decision?.field?.id || decision?.field?.fieldId,
+      fieldLabel: decisionFieldLabel(decision),
+      reason: decision?.reason || 'Blocked by safety rules',
+      field: decision?.field ? serializeField(decision.field) : null,
+    })).filter(item => item.fieldId);
+
+    return { filled, skipped, blocked };
+  }
+
   function isEditableElement(el) {
     if (!el) return false;
     if (el.isContentEditable) return true;
@@ -1013,6 +1069,7 @@ if (typeof window._ffProInitialized === 'undefined') {
     // Step 4: Decision Engine — process checkboxes, dropdowns, radios
     const domain = DomainIntelligence.getDomain();
     let decisionResults = null;
+    let decisionFillResponse = { filled: [], skipped: [], blocked: [] };
     if (typeof DecisionEngine !== 'undefined') {
       const settings = {};
       try {
@@ -1024,6 +1081,7 @@ if (typeof window._ffProInitialized === 'undefined') {
 
       // Apply checkbox/dropdown/radio decisions
       const applied = DecisionEngine.applyAll(decisionResults);
+      decisionFillResponse = decisionResultsToFillResponse(applied);
 
       // Record successful fills into learned memory
       await DecisionEngine.recordSuccessfulFills(applied, domain, formType?.type);
@@ -1057,14 +1115,14 @@ if (typeof window._ffProInitialized === 'undefined') {
     startCorrectionWatchers(domain, formType?.type);
 
     return {
-      filled: injectionResult.filled,
-      skipped: injectionResult.skipped,
+      filled: [...decisionFillResponse.filled, ...injectionResult.filled],
+      skipped: [...decisionFillResponse.skipped, ...injectionResult.skipped],
       blocked: blocked.map(b => ({
         fieldId: b.field.id,
         fieldLabel: b.field.label || b.field.name || b.field.id,
         reason: b.reason,
         field: serializeField(b.field),
-      })),
+      })).concat(decisionFillResponse.blocked),
       failed: injectionResult.failed,
       formType,
       totalFields: fields.length,

@@ -385,6 +385,8 @@ var CheckboxEngine = CheckboxEngine || (() => {
   function toBool(v) {
     if (typeof v === 'boolean') return v;
     const s = String(v).toLowerCase().trim();
+    if (/not\s+(authorized|eligible)|no\s+right\s+to\s+work/.test(s)) return false;
+    if (/citizen|authorized|eligible|right\s+to\s+work|permanent\s+resident/.test(s)) return true;
     return s === 'true' || s === 'yes' || s === 'on' || s === '1';
   }
 

@@ -5,6 +5,7 @@ That file is ignored by git and will override this default automatically.
 """
 
 from copy import deepcopy
+from typing import Any, Dict, Iterable, Tuple
 
 
 DEFAULT_USER_PROFILE = {
@@ -544,4 +545,208 @@ def get_user_data() -> dict:
     """Return a defensive copy of the active profile data."""
 
     return deepcopy(USER_PROFILE)
+
+
+def _is_empty(value: Any) -> bool:
+    return value in (None, "", [], {})
+
+
+def _stringify_autofill_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return " ".join(value.split()).strip()
+    if isinstance(value, list):
+        scalar_items = []
+        for item in value:
+            if isinstance(item, dict):
+                compact = ", ".join(
+                    _stringify_autofill_value(item_value)
+                    for item_value in item.values()
+                    if not _is_empty(item_value)
+                )
+                if compact:
+                    scalar_items.append(compact)
+            elif not _is_empty(item):
+                scalar_items.append(_stringify_autofill_value(item))
+        return ", ".join(item for item in scalar_items if item)
+    if isinstance(value, dict):
+        return ", ".join(
+            f"{key}: {_stringify_autofill_value(item)}"
+            for key, item in value.items()
+            if not _is_empty(item)
+        )
+    return str(value).strip()
+
+
+def _add_value(target: Dict[str, str], key: str | None, value: Any, *, overwrite: bool = False) -> None:
+    if not key or _is_empty(value):
+        return
+    text = _stringify_autofill_value(value)
+    if not text:
+        return
+    if overwrite or key not in target or not target[key]:
+        target[key] = text
+
+
+def _flatten_values(value: Any, prefix: str = "") -> Iterable[Tuple[str, Any]]:
+    if _is_empty(value):
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            next_prefix = f"{prefix}.{key}" if prefix else str(key)
+            yield from _flatten_values(item, next_prefix)
+        return
+    if isinstance(value, list):
+        if all(not isinstance(item, (dict, list)) for item in value):
+            yield prefix, value
+            return
+        for index, item in enumerate(value, start=1):
+            next_prefix = f"{prefix}.{index}" if prefix else str(index)
+            yield from _flatten_values(item, next_prefix)
+        return
+    yield prefix, value
+
+
+def get_autofill_profile_data() -> Dict[str, str]:
+    """Return a flat profile optimized for extension-side autofill.
+
+    The browser extension's instant autofill path is intentionally local and
+    does not call the LLM. It needs flat key/value data, so this function turns
+    the richer nested profile into canonical autofill fields plus searchable
+    section-derived keys.
+    """
+
+    profile = get_user_data()
+    data: Dict[str, str] = {}
+
+    for section_name in ("autofill_fields", "form_preferences"):
+        section = profile.get(section_name)
+        if isinstance(section, dict):
+            for key, value in section.items():
+                _add_value(data, key, value, overwrite=True)
+
+    personal = profile.get("personal_info") or {}
+    if isinstance(personal, dict):
+        location = personal.get("location") or {}
+        _add_value(data, "full_name", personal.get("full_name") or personal.get("name"), overwrite=True)
+        _add_value(data, "name", personal.get("full_name") or personal.get("name"))
+        _add_value(data, "first_name", personal.get("first_name"), overwrite=True)
+        _add_value(data, "last_name", personal.get("last_name"), overwrite=True)
+        _add_value(data, "email", personal.get("email"), overwrite=True)
+        _add_value(data, "phone", personal.get("phone"), overwrite=True)
+        _add_value(data, "current_title", personal.get("current_title"), overwrite=True)
+        _add_value(data, "current_company", personal.get("current_company"), overwrite=True)
+        _add_value(data, "headline", personal.get("headline"), overwrite=True)
+        _add_value(data, "summary", personal.get("summary"), overwrite=False)
+        _add_value(data, "linkedin", personal.get("linkedin_url"), overwrite=True)
+        _add_value(data, "portfolio", personal.get("portfolio_url"), overwrite=True)
+        _add_value(data, "website", personal.get("website_url"), overwrite=True)
+        _add_value(data, "github", personal.get("github_url"), overwrite=True)
+        _add_value(data, "open_to_work", personal.get("open_to_work"), overwrite=True)
+        _add_value(data, "employment_type_preference", personal.get("employment_type_preference"), overwrite=True)
+        _add_value(data, "work_authorization", personal.get("work_authorization"), overwrite=False)
+        _add_value(data, "work_authorization_detail", personal.get("work_authorization"), overwrite=True)
+        _add_value(data, "date_of_birth", personal.get("date_of_birth"), overwrite=True)
+        _add_value(data, "dob", personal.get("date_of_birth"))
+        _add_value(data, "languages_known", personal.get("languages_known"), overwrite=True)
+        if isinstance(location, dict):
+            _add_value(data, "city", location.get("city"), overwrite=True)
+            _add_value(data, "state", location.get("state"), overwrite=True)
+            _add_value(data, "country", location.get("country"), overwrite=True)
+            _add_value(data, "location", location.get("full_location"), overwrite=True)
+
+    professional = profile.get("professional_profile") or {}
+    if isinstance(professional, dict):
+        _add_value(data, "desired_title", professional.get("primary_role"), overwrite=False)
+        _add_value(data, "target_role", professional.get("primary_role"), overwrite=True)
+        _add_value(data, "secondary_roles", professional.get("secondary_roles"), overwrite=True)
+        _add_value(data, "years_of_experience", professional.get("total_years_experience"), overwrite=False)
+        _add_value(data, "domains", professional.get("domains"), overwrite=True)
+
+    skills = profile.get("skills") or {}
+    if isinstance(skills, dict):
+        skill_parts = []
+        for value in skills.values():
+            if isinstance(value, list):
+                skill_parts.extend(_stringify_autofill_value(item) for item in value if not _is_empty(item))
+        _add_value(data, "skills", ", ".join(item for item in skill_parts if item), overwrite=False)
+        for key, value in skills.items():
+            _add_value(data, key, value, overwrite=False)
+
+    education = profile.get("education") or []
+    if isinstance(education, list) and education:
+        first_education = education[0] if isinstance(education[0], dict) else {}
+        _add_value(data, "highest_degree", first_education.get("degree"), overwrite=True)
+        _add_value(data, "school", first_education.get("institution"), overwrite=True)
+        _add_value(data, "major", first_education.get("field_of_study"), overwrite=True)
+        _add_value(data, "graduation_year", first_education.get("end_year"), overwrite=True)
+        _add_value(data, "cgpa", first_education.get("cgpa"), overwrite=True)
+
+    experience = profile.get("experience") or []
+    if isinstance(experience, list):
+        current = next(
+            (item for item in experience if isinstance(item, dict) and item.get("is_current")),
+            experience[0] if experience and isinstance(experience[0], dict) else {},
+        )
+        if isinstance(current, dict):
+            _add_value(data, "current_company", current.get("company"), overwrite=False)
+            _add_value(data, "current_title", current.get("title"), overwrite=False)
+            _add_value(data, "current_location", current.get("location"), overwrite=True)
+            _add_value(data, "current_start_date", current.get("start_date"), overwrite=True)
+            _add_value(data, "current_work_summary", current.get("description"), overwrite=True)
+
+    job_preferences = profile.get("job_preferences") or {}
+    if isinstance(job_preferences, dict):
+        target_roles = job_preferences.get("target_roles")
+        first_target_role = target_roles[0] if isinstance(target_roles, list) and target_roles else None
+        _add_value(data, "desired_title", first_target_role, overwrite=False)
+        _add_value(data, "target_roles", job_preferences.get("target_roles"), overwrite=True)
+        _add_value(data, "preferred_employment_type", job_preferences.get("preferred_employment_type"), overwrite=True)
+        _add_value(data, "employment_type_preference", job_preferences.get("preferred_employment_type"), overwrite=False)
+        _add_value(data, "preferred_locations", job_preferences.get("preferred_locations"), overwrite=True)
+        _add_value(data, "remote_preference", job_preferences.get("remote_preference"), overwrite=True)
+        _add_value(data, "open_to_opportunities", job_preferences.get("open_to_opportunities"), overwrite=True)
+
+    cover_letter = profile.get("cover_letter") or {}
+    if isinstance(cover_letter, dict):
+        _add_value(data, "cover_letter", " ".join(
+            _stringify_autofill_value(cover_letter.get(key))
+            for key in ("opening", "body", "ai_ml_focus", "closing")
+            if not _is_empty(cover_letter.get(key))
+        ), overwrite=False)
+        _add_value(data, "message_to_recruiter", cover_letter.get("recruiter_message_200_chars"), overwrite=False)
+        for key, value in cover_letter.items():
+            _add_value(data, f"cover_letter_{key}", value, overwrite=False)
+
+    links = profile.get("links") or {}
+    if isinstance(links, dict):
+        for key, value in links.items():
+            _add_value(data, key, value, overwrite=False)
+
+    # Keep every scalar nested value addressable for the UI and profile-pool
+    # matching, without letting generic flattened keys override canonical keys.
+    for key, value in _flatten_values(profile):
+        normalized_key = key.replace(" ", "_")
+        _add_value(data, normalized_key, value, overwrite=False)
+        if "." in normalized_key:
+            _add_value(data, normalized_key.split(".")[-1], value, overwrite=False)
+
+    return data
+
+
+def get_extension_profile() -> dict:
+    """Return a profile payload that the browser extension can import."""
+
+    data = get_autofill_profile_data()
+    return {
+        "id": "backend_user_data",
+        "name": "Backend User Data",
+        "icon": "DB",
+        "data": data,
+        "field_count": len([value for value in data.values() if value]),
+        "source": USER_PROFILE.get("metadata", {}).get("source") if isinstance(USER_PROFILE, dict) else None,
+    }
 

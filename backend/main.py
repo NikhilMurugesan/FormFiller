@@ -19,6 +19,7 @@ from .contracts import (
 from .document_store import chunk_text, clear_storage, get_chunk_count, get_filename, is_cached, store_document
 from .normalization import normalize_request
 from .rag import embed_texts, retrieve_context_for_fields
+from .user_data import get_extension_profile, get_user_data
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> str:
@@ -55,6 +56,19 @@ app.add_middleware(
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "AI Form Filler Backend is running"}
+
+
+@app.get("/user-profile")
+def user_profile(include_raw: bool = False):
+    profile = get_extension_profile()
+    response = {
+        "status": "ok",
+        "profile": profile,
+        "field_count": profile["field_count"],
+    }
+    if include_raw:
+        response["raw_profile"] = get_user_data()
+    return response
 
 
 @app.get("/document-status")

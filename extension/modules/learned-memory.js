@@ -80,6 +80,7 @@ var LearnedMemory = LearnedMemory || (() => {
     { intent: 'veteran_status',        patterns: [/veteran/i, /military/i, /armed.?force/i, /service.?member/i] },
     { intent: 'disability_status',     patterns: [/disab/i, /handicap/i, /accommodat/i, /special.?need/i] },
     { intent: 'newsletter',            patterns: [/newsletter/i, /subscri/i, /mailing.?list/i, /email.?update/i, /marketing.?email/i, /promotional/i] },
+    { intent: 'country_code',          patterns: [/country.?code/i, /dial.?code/i, /dialing.?code/i, /phone.?country.?code/i, /isd.?code/i, /calling.?code/i] },
     { intent: 'country',               patterns: [/country/i, /nation/i, /country.?of.?residence/i, /home.?country/i] },
     { intent: 'state',                 patterns: [/^state$/i, /province/i, /state.?province/i, /region/i] },
     { intent: 'city',                  patterns: [/^city$/i, /town/i, /city.?town/i, /metro/i, /location/i, /preferred.?location/i] },

@@ -254,9 +254,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   await StorageManager.init();
 
   // Load all UI sections
+  await loadSettings();
+  await syncBackendProfile({ silent: true });
   await loadProfileBadge();
   await loadPageInfo();
-  await loadSettings();
   await loadProfilesList();
   await loadDocumentStatus();
   await loadDomainMappings();
@@ -328,6 +329,41 @@ async function loadProfileBadge() {
   if (profile) {
     document.getElementById('badgeIcon').textContent = profile.icon || '👤';
     document.getElementById('badgeName').textContent = profile.name || 'Profile';
+  }
+}
+
+function setProfileSyncStatus(message, type = 'info') {
+  const el = document.getElementById('profileSyncStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.style.color = type === 'error' ? 'var(--error)' :
+                   type === 'success' ? 'var(--success)' :
+                   type === 'warning' ? 'var(--warning)' :
+                   'var(--text-secondary)';
+}
+
+async function syncBackendProfile(options = {}) {
+  const silent = options.silent === true;
+  try {
+    if (!silent) setProfileSyncStatus('Syncing backend user data...', 'info');
+    const settings = await StorageManager.getSettings();
+    const response = await AIAssist.getUserProfile(settings.aiAssistUrl);
+    if (response.error) throw new Error(response.error);
+    if (!response.profile?.data) throw new Error('No backend profile data returned');
+
+    const profile = await StorageManager.upsertBackendProfile(response, { activate: options.activate !== false });
+    const fieldCount = Object.values(profile.data || {}).filter(v => String(v || '').trim()).length;
+    if (!silent) {
+      setProfileSyncStatus(`Synced ${fieldCount} backend values into ${profile.name}`, 'success');
+      showToast(`Synced ${fieldCount} backend values`, 'success');
+    }
+    return profile;
+  } catch (err) {
+    if (!silent) {
+      setProfileSyncStatus('Backend sync failed: ' + err.message, 'error');
+      showToast(err.message, 'error');
+    }
+    return null;
   }
 }
 
@@ -1226,6 +1262,23 @@ async function loadProfilesList() {
 }
 
 function setupProfileActions() {
+  document.getElementById('btnSyncBackendProfile')?.addEventListener('click', async () => {
+    const profile = await syncBackendProfile({ silent: false });
+    if (profile) {
+      await loadProfileBadge();
+      await loadProfilesList();
+      if (editingProfileId === profile.id) {
+        await openProfileEditor(profile.id);
+      }
+    }
+  });
+
+  document.getElementById('btnRefreshProfiles')?.addEventListener('click', async () => {
+    await loadProfileBadge();
+    await loadProfilesList();
+    setProfileSyncStatus('Profile UI refreshed', 'info');
+  });
+
   document.getElementById('btnAddProfile').addEventListener('click', async () => {
     const name = prompt('Profile name:');
     if (!name) return;
@@ -1280,13 +1333,17 @@ const EDITOR_FIELDS = [
   { key: 'last_name',   label: 'Last Name' },
   { key: 'email',       label: 'Email', type: 'email' },
   { key: 'phone',       label: 'Phone' },
+  { key: 'country_code', label: 'Country Code' },
+  { key: 'phone_number_digits', label: 'Phone Number' },
   { key: 'address',     label: 'Address', fullWidth: true },
+  { key: 'location',    label: 'Location' },
   { key: 'city',        label: 'City' },
   { key: 'state',       label: 'State' },
   { key: 'zip',         label: 'ZIP/Postal' },
   { key: 'country',     label: 'Country' },
   { key: 'current_company', label: 'Company' },
   { key: 'current_title',   label: 'Job Title' },
+  { key: 'desired_title',   label: 'Desired Title' },
   { key: 'linkedin',    label: 'LinkedIn', fullWidth: true },
   { key: 'portfolio',   label: 'Portfolio' },
   { key: 'github',      label: 'GitHub' },
@@ -1296,11 +1353,62 @@ const EDITOR_FIELDS = [
   { key: 'major',       label: 'Major' },
   { key: 'graduation_year', label: 'Grad Year' },
   { key: 'years_of_experience', label: 'Experience (years)' },
+  { key: 'employment_type_preference', label: 'Employment Type' },
+  { key: 'work_authorization', label: 'Work Authorization' },
+  { key: 'sponsorship_required', label: 'Sponsorship Required' },
+  { key: 'willing_to_relocate', label: 'Willing To Relocate' },
+  { key: 'remote_preference', label: 'Remote Preference' },
+  { key: 'preferred_locations', label: 'Preferred Locations', fullWidth: true },
+  { key: 'veteran_status', label: 'Veteran Status' },
+  { key: 'armed_forces_service', label: 'Armed Forces Service' },
+  { key: 'languages_known', label: 'Languages' },
   { key: 'gender',      label: 'Gender' },
   { key: 'dob',         label: 'Date of Birth' },
+  { key: 'date_of_birth', label: 'Date of Birth (Profile)' },
+  { key: 'headline',    label: 'Headline', fullWidth: true, textarea: true },
   { key: 'skills',      label: 'Skills', fullWidth: true, textarea: true },
   { key: 'summary',     label: 'Summary', fullWidth: true, textarea: true },
+  { key: 'cover_letter', label: 'Cover Letter', fullWidth: true, textarea: true },
+  { key: 'message_to_recruiter', label: 'Recruiter Message', fullWidth: true, textarea: true },
 ];
+
+function labelizeProfileKey(key) {
+  return String(key || '')
+    .replace(/\./g, ' ')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function formatProfileValueForInput(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.join(', ');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function shouldUseTextarea(key, value, fieldConfig = {}) {
+  if (fieldConfig.textarea) return true;
+  const text = formatProfileValueForInput(value);
+  return text.length > 90 || /summary|skills|letter|message|description|headline|achievements|technologies|domains|roles|locations/i.test(key);
+}
+
+function buildEditorFields(profileData) {
+  const known = new Set(EDITOR_FIELDS.map(field => field.key));
+  const extraFields = Object.keys(profileData || {})
+    .filter(key => !known.has(key))
+    .sort((a, b) => a.localeCompare(b))
+    .map(key => {
+      const value = profileData[key];
+      const textarea = shouldUseTextarea(key, value);
+      return {
+        key,
+        label: labelizeProfileKey(key),
+        fullWidth: textarea || String(key).length > 28,
+        textarea,
+      };
+    });
+  return [...EDITOR_FIELDS, ...extraFields];
+}
 
 async function openProfileEditor(profileId) {
   editingProfileId = profileId;
@@ -1310,23 +1418,24 @@ async function openProfileEditor(profileId) {
   document.getElementById('editorTitle').textContent = `Edit: ${profile.name}`;
   const grid = document.getElementById('editorGrid');
 
-  grid.innerHTML = EDITOR_FIELDS.map(f => {
-    const value = profile.data[f.key] || '';
+  const fields = buildEditorFields(profile.data || {});
+  grid.innerHTML = fields.map(f => {
+    const value = formatProfileValueForInput(profile.data[f.key]);
     const cls = f.fullWidth ? 'editor-field full-width' : 'editor-field';
 
-    if (f.textarea) {
+    if (shouldUseTextarea(f.key, value, f)) {
       return `
         <div class="${cls}">
-          <label>${f.label}</label>
-          <textarea data-key="${f.key}" rows="2">${value}</textarea>
+          <label>${escapeHtml(f.label)}</label>
+          <textarea data-key="${escapeHtml(f.key)}" rows="2">${escapeHtml(value)}</textarea>
         </div>
       `;
     }
 
     return `
       <div class="${cls}">
-        <label>${f.label}</label>
-        <input type="${f.type || 'text'}" data-key="${f.key}" value="${escapeHtml(value)}">
+        <label>${escapeHtml(f.label)}</label>
+        <input type="${f.type || 'text'}" data-key="${escapeHtml(f.key)}" value="${escapeHtml(value)}">
       </div>
     `;
   }).join('');
@@ -1373,8 +1482,7 @@ async function loadSettings() {
   document.getElementById('settingDebug').checked = settings.debugMode === true;
   document.getElementById('settingAiUrl').value = settings.aiAssistUrl || AIAssist.DEFAULT_API_URL;
 
-  // Show/hide AI URL setting
-  document.getElementById('aiUrlSetting').classList.toggle('hidden', !settings.aiAssistEnabled);
+  document.getElementById('aiUrlSetting').classList.remove('hidden');
 }
 
 function setupSettingsActions() {
@@ -1389,10 +1497,7 @@ function setupSettingsActions() {
     document.getElementById(elId).addEventListener('change', async (e) => {
       await StorageManager.updateSettings({ [settingKey]: e.target.checked });
 
-      // Toggle AI URL visibility
-      if (settingKey === 'aiAssistEnabled') {
-        document.getElementById('aiUrlSetting').classList.toggle('hidden', !e.target.checked);
-      }
+      document.getElementById('aiUrlSetting').classList.remove('hidden');
     });
   }
 

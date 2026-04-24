@@ -301,6 +301,16 @@
       <!-- Profile List -->
       <div class="profile-cards" id="profileCardsList"></div>
 
+      <div class="io-row mt-2">
+        <button class="btn btn-primary btn-sm" id="btnSyncBackendProfile" style="flex:1;">
+          Sync Backend User Data
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btnRefreshProfiles" style="flex:1;">
+          Refresh UI
+        </button>
+      </div>
+      <div id="profileSyncStatus" style="font-size:11px;color:var(--text-secondary);margin-top:6px;"></div>
+
       <!-- Add New Profile -->
       <div class="mt-2">
         <button class="btn btn-secondary btn-block" id="btnAddProfile">
@@ -383,12 +393,12 @@
         </label>
       </div>
 
-      <div class="setting-row hidden" id="aiUrlSetting">
+      <div class="setting-row" id="aiUrlSetting">
         <div class="sr-info" style="width:100%;">
-          <div class="sr-label">AI Backend URL</div>
+          <div class="sr-label">Backend URL</div>
           <input class="config-input mt-2" id="settingAiUrl" 
                  value="https://form-filler-pi.vercel.app" 
-                 placeholder="https://your-backend.com">
+                 placeholder="http://localhost:8000">
         </div>
       </div>
 
