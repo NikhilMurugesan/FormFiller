@@ -1,16 +1,19 @@
 import json
+import re
 from typing import Any, Dict, List
 
 
 SYSTEM_PROMPT = """You map browser form fields to the best user value.
-Use the field label, placeholder, nearby text, section heading, options, page/form context, learned hints, profile data, and resume snippets.
+Use the field label, placeholder, nearby text, section heading, options, page/form context, learned hints, profile QA answers, profile data, and resume snippets.
 Rules:
-1. Never invent values absent from profile, learned hints, or resume context.
+1. Never invent values absent from profile, learned hints, profile QA, or resume context.
 2. Skip sensitive fields such as passwords, SSN, credit card, OTP, CVV.
 3. For select/radio/checkbox fields, suggested_value must exactly match one option text or option value.
-4. status must be one of matched, uncertain, failed, skipped.
-5. confidence is 0-100.
-6. source must be one of rag, learned, profile, deterministic, failed.
+4. Prefer exact learned hints and profile QA when the field label/question matches the current field.
+5. Treat low-confidence learned hints as context, not as automatic truth.
+6. status must be one of matched, uncertain, failed, skipped.
+7. confidence is 0-100.
+8. source must be one of rag, learned, profile, deterministic, failed.
 
 Respond only as JSON:
 {"suggestions":[{"field_id":"...","detected_intent":"...","suggested_value":"...","source":"rag","confidence":84,"reason":"short reason","status":"matched","candidate_alternatives":["..."]}]}"""
@@ -51,6 +54,148 @@ def _trim_value(value: Any, max_len: int = 220) -> Any:
     return value
 
 
+WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def _norm(value: Any) -> str:
+    if value is None:
+        return ""
+    text = str(value).lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _token_overlap(left: Any, right: Any) -> float:
+    left_tokens = set(WORD_RE.findall(_norm(left)))
+    right_tokens = set(WORD_RE.findall(_norm(right)))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / max(len(left_tokens), len(right_tokens))
+
+
+def _field_text(field: Dict[str, Any]) -> str:
+    return " ".join(
+        str(item)
+        for item in [
+            field.get("label"),
+            field.get("placeholder"),
+            field.get("aria_label"),
+            field.get("field_name"),
+            field.get("section_heading"),
+            field.get("nearby_text"),
+        ]
+        if item
+    )
+
+
+def _profile_for_prompt(profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        key: value
+        for key, value in (profile_data or {}).items()
+        if key != "learned_memory"
+    }
+
+
+def _learned_hints_for_field(field: Dict[str, Any], normalized_context: Dict[str, Any]) -> List[Dict[str, Any]]:
+    domain = normalized_context.get("page", {}).get("domain")
+    entries = normalized_context.get("learned", {}).get("entries") or []
+    field_text = _field_text(field)
+    field_text_norm = _norm(field_text)
+    field_id_norm = _norm(field.get("field_id"))
+    field_name_norm = _norm(field.get("field_name"))
+    intent = field.get("intent")
+    ranked = []
+
+    for entry in entries:
+        value = entry.get("value") if isinstance(entry, dict) else None
+        if value in (None, "", [], {}):
+            continue
+
+        entry_domain = entry.get("domain")
+        same_domain = entry_domain in {domain, None}
+        global_domain = entry_domain == "__global__"
+        entry_intent = entry.get("field_intent")
+        label_norm = _norm(entry.get("field_label"))
+        score = 0
+
+        if same_domain and field_id_norm and _norm(entry.get("field_id")) == field_id_norm:
+            score += 60
+        if same_domain and field_name_norm and _norm(entry.get("field_name")) == field_name_norm:
+            score += 45
+        if intent and intent != "unknown" and entry_intent == intent:
+            score += 32 if same_domain else 18 if global_domain else 0
+        if label_norm and field_text_norm:
+            if label_norm == _norm(field.get("label")):
+                score += 34
+            elif label_norm in field_text_norm:
+                score += 24
+            else:
+                score += int(_token_overlap(label_norm, field_text_norm) * 28)
+        if same_domain:
+            score += 12
+        elif global_domain:
+            score += 5
+        score += min(int(entry.get("confidence") or 0), 100) // 10
+
+        if score >= 30:
+            ranked.append(
+                {
+                    "score": score,
+                    "domain": entry_domain,
+                    "field_label": entry.get("field_label"),
+                    "field_intent": entry_intent,
+                    "value": value,
+                    "confidence": entry.get("confidence"),
+                    "source": entry.get("value_source"),
+                }
+            )
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return [_trim_value(item, 180) for item in ranked[:4]]
+
+
+def _profile_qa_hints_for_field(profile_data: Dict[str, Any], field: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_sections = [
+        profile_data.get("qa"),
+        profile_data.get("form_qa"),
+        profile_data.get("common_form_answers"),
+    ]
+    learned_memory = profile_data.get("learned_memory") or {}
+    if isinstance(learned_memory, dict):
+        raw_sections.append(learned_memory.get("qa"))
+
+    field_text = _field_text(field)
+    field_text_norm = _norm(field_text)
+    hints = []
+    for raw_section in raw_sections:
+        if isinstance(raw_section, dict):
+            raw_items = [{"question": question, "answer": answer} for question, answer in raw_section.items()]
+        elif isinstance(raw_section, list):
+            raw_items = raw_section
+        else:
+            continue
+
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            question = item.get("question") or item.get("label") or item.get("field_label")
+            answer = item.get("answer", item.get("value"))
+            if not question or answer in (None, "", [], {}):
+                continue
+            question_norm = _norm(question)
+            overlap = _token_overlap(question_norm, field_text_norm)
+            if question_norm in field_text_norm or overlap >= 0.65:
+                hints.append(
+                    {
+                        "question": question,
+                        "answer": answer,
+                        "confidence": item.get("confidence"),
+                        "source": item.get("source") or "profile_qa",
+                    }
+                )
+    return [_trim_value(item, 180) for item in hints[:4]]
+
+
 def build_user_message(
     profile_data: Dict[str, Any],
     normalized_context: Dict[str, Any],
@@ -60,7 +205,7 @@ def build_user_message(
     payload = {
         "page": normalized_context["page"],
         "form": normalized_context["form"],
-        "profile": _trim_value(profile_data, 180),
+        "profile": _trim_value(_profile_for_prompt(profile_data), 180),
         "fields": [],
     }
 
@@ -80,6 +225,8 @@ def build_user_message(
                 "section_heading": field.get("section_heading"),
                 "parent_section_text": field.get("parent_section_text"),
                 "candidate_options": field.get("candidate_options", [])[:8],
+                "learned_hints": _learned_hints_for_field(field, normalized_context),
+                "profile_qa_hints": _profile_qa_hints_for_field(profile_data, field),
                 "resume_context": retrieval.get("context_text"),
             }
         )

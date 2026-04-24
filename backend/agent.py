@@ -34,14 +34,17 @@ from .user_data import get_user_data
 load_dotenv()
 
 client = genai.Client()
-MODEL_NAME = os.getenv("DEFAULT_MODEL", "gemini-3-flash-preview")
+MODEL_NAME = os.getenv("DEFAULT_MODEL", "gemini-2.5-flash-lite")
 PRICE_PER_1M_PROMPT = 0.075
 PRICE_PER_1M_CANDIDATE = 0.30
 
 SENSITIVE_RE = re.compile(r"password|passcode|otp|cvv|cvc|credit.?card|ssn|social.?security", re.I)
 MATCHED_THRESHOLD = 80
 UNCERTAIN_THRESHOLD = 55
-LEARNED_THRESHOLD = 80
+LEARNED_EXACT_THRESHOLD = 60
+LEARNED_DOMAIN_INTENT_THRESHOLD = 65
+LEARNED_GLOBAL_INTENT_THRESHOLD = 45
+LEARNED_LABEL_THRESHOLD = 60
 MAX_LLM_RETRIES = 2
 RETRYABLE_LLM_STATUS_RE = re.compile(r"\b(429|500|502|503|504)\b")
 MATCHABLE_TAGS = {"select", "radio", "checkbox"}
@@ -158,6 +161,175 @@ def _deep_merge_profiles(base: Any, override: Any) -> Any:
             merged[key] = _deep_merge_profiles(base.get(key), value)
         return merged
     return override if override not in (None, "", [], {}) else base
+
+
+_LEARNED_KEY_MAP = {
+    "pageType": "page_type",
+    "fieldLabel": "field_label",
+    "fieldType": "field_type",
+    "fieldName": "field_name",
+    "fieldId": "field_id",
+    "fieldIntent": "field_intent",
+    "valueSource": "value_source",
+    "usageCount": "usage_count",
+    "correctionCount": "correction_count",
+    "createdAt": "created_at",
+    "lastUsedAt": "last_used_at",
+}
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_learned_entry(entry: Any) -> Dict[str, Any]:
+    if hasattr(entry, "model_dump"):
+        raw = entry.model_dump()
+    elif isinstance(entry, dict):
+        raw = dict(entry)
+    else:
+        return {}
+
+    for source, target in _LEARNED_KEY_MAP.items():
+        if source in raw and target not in raw:
+            raw[target] = raw[source]
+
+    return {
+        "id": raw.get("id"),
+        "domain": raw.get("domain"),
+        "page_type": raw.get("page_type"),
+        "field_label": raw.get("field_label"),
+        "field_type": raw.get("field_type"),
+        "field_name": raw.get("field_name"),
+        "field_id": raw.get("field_id"),
+        "placeholder": raw.get("placeholder"),
+        "field_intent": raw.get("field_intent") or "unknown",
+        "value": raw.get("value"),
+        "confidence": max(0, min(100, _safe_int(raw.get("confidence"), 0))),
+        "value_source": raw.get("value_source"),
+        "usage_count": max(0, _safe_int(raw.get("usage_count"), 0)),
+        "correction_count": max(0, _safe_int(raw.get("correction_count"), 0)),
+        "created_at": raw.get("created_at"),
+        "last_used_at": raw.get("last_used_at"),
+    }
+
+
+def _learned_entries_from_profile(profile_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    learned_memory = profile_data.get("learned_memory") or {}
+    if isinstance(learned_memory, list):
+        raw_entries = learned_memory
+    elif isinstance(learned_memory, dict):
+        raw_entries = learned_memory.get("entries") or []
+    else:
+        raw_entries = []
+    return [entry for entry in (_normalize_learned_entry(item) for item in raw_entries) if entry]
+
+
+def _learned_signature(entry: Dict[str, Any]) -> tuple:
+    if entry.get("id"):
+        return ("id", _norm(entry.get("id")))
+    return (
+        _norm(entry.get("domain")),
+        _norm(entry.get("field_intent")),
+        _norm(entry.get("field_id")),
+        _norm(entry.get("field_name")),
+        _norm(entry.get("field_label")),
+        _norm(entry.get("value")),
+    )
+
+
+def _learned_rank(entry: Dict[str, Any], source_order: int) -> int:
+    manual_boost = 8 if entry.get("value_source") == "manual_correction" else 0
+    return (
+        entry.get("confidence", 0)
+        + min(entry.get("usage_count", 0), 10) * 2
+        - entry.get("correction_count", 0) * 4
+        + manual_boost
+        + source_order
+    )
+
+
+def _merge_local_learned_entries(normalized_context: Dict[str, Any], profile_data: Dict[str, Any]) -> None:
+    entries = []
+    for source_order, raw_entries in enumerate(
+        (
+            _learned_entries_from_profile(profile_data),
+            normalized_context["learned"].get("entries") or [],
+        )
+    ):
+        for raw_entry in raw_entries:
+            entry = _normalize_learned_entry(raw_entry)
+            if entry:
+                entry["_source_order"] = source_order
+                entries.append(entry)
+
+    best_by_signature: Dict[tuple, Dict[str, Any]] = {}
+    for entry in entries:
+        signature = _learned_signature(entry)
+        current = best_by_signature.get(signature)
+        if not current or _learned_rank(entry, entry.get("_source_order", 0)) > _learned_rank(
+            current, current.get("_source_order", 0)
+        ):
+            best_by_signature[signature] = entry
+
+    normalized_context["learned"]["entries"] = [
+        {key: value for key, value in entry.items() if key != "_source_order"}
+        for entry in best_by_signature.values()
+    ]
+
+
+def _profile_form_qa_items(profile_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_sections = [
+        profile_data.get("qa"),
+        profile_data.get("form_qa"),
+        profile_data.get("common_form_answers"),
+    ]
+    learned_memory = profile_data.get("learned_memory") or {}
+    if isinstance(learned_memory, dict):
+        raw_sections.append(learned_memory.get("qa"))
+
+    items: List[Dict[str, Any]] = []
+    for raw_section in raw_sections:
+        if isinstance(raw_section, dict):
+            raw_items = [
+                {"question": question, "answer": answer}
+                for question, answer in raw_section.items()
+            ]
+        elif isinstance(raw_section, list):
+            raw_items = raw_section
+        else:
+            continue
+
+        for raw_item in raw_items:
+            if not isinstance(raw_item, dict):
+                continue
+            answer = raw_item.get("answer", raw_item.get("value"))
+            if answer in (None, "", [], {}):
+                continue
+            question = (
+                raw_item.get("question")
+                or raw_item.get("label")
+                or raw_item.get("field_label")
+                or raw_item.get("fieldLabel")
+            )
+            if not question:
+                continue
+            items.append(
+                {
+                    "question": question,
+                    "answer": answer,
+                    "domain": raw_item.get("domain"),
+                    "field_id": raw_item.get("field_id") or raw_item.get("fieldId"),
+                    "field_name": raw_item.get("field_name") or raw_item.get("fieldName"),
+                    "intent": raw_item.get("intent") or raw_item.get("field_intent") or raw_item.get("fieldIntent"),
+                    "confidence": max(0, min(100, _safe_int(raw_item.get("confidence"), 82))),
+                    "source": raw_item.get("source") or raw_item.get("value_source") or raw_item.get("valueSource") or "qa",
+                }
+            )
+    return items
 
 
 def _get_profile_data(normalized_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -579,41 +751,155 @@ def resolve_learned_value(field: Dict[str, Any], normalized_context: Dict[str, A
     domain = normalized_context["page"].get("domain")
     intent = field.get("intent")
 
-    if not intent or intent == "unknown":
-        return None
+    candidates = []
+    field_label_norm = _norm(field.get("label"))
+    field_name_norm = _norm(field.get("field_name"))
+    field_id_norm = _norm(field.get("field_id"))
+    field_text = _norm(_field_text(field))
 
-    exact = [
-        entry
-        for entry in entries
-        if entry.get("field_id") == field["field_id"] and entry.get("confidence", 0) >= LEARNED_THRESHOLD
-    ]
-    by_intent = [
-        entry
-        for entry in entries
-        if entry.get("field_intent") == intent
-        and entry.get("confidence", 0) >= LEARNED_THRESHOLD
-        and entry.get("domain") in {domain, "__global__", None}
-    ]
-    candidates = exact or by_intent
+    for raw_entry in entries:
+        entry = _normalize_learned_entry(raw_entry)
+        if not entry or entry.get("value") in (None, "", [], {}):
+            continue
+
+        entry_domain = entry.get("domain")
+        same_domain = entry_domain in {domain, None}
+        global_domain = entry_domain == "__global__"
+        confidence = entry.get("confidence", 0)
+        entry_intent = entry.get("field_intent")
+        entry_label_norm = _norm(entry.get("field_label"))
+        entry_name_norm = _norm(entry.get("field_name"))
+        entry_id_norm = _norm(entry.get("field_id"))
+        priority = 0
+
+        if same_domain and field_id_norm and entry_id_norm == field_id_norm and confidence >= LEARNED_EXACT_THRESHOLD:
+            priority = 5
+        elif same_domain and field_name_norm and entry_name_norm == field_name_norm and confidence >= LEARNED_EXACT_THRESHOLD:
+            priority = 4
+        elif same_domain and field_label_norm and entry_label_norm and confidence >= LEARNED_LABEL_THRESHOLD:
+            if entry_label_norm == field_label_norm:
+                priority = 4
+            elif entry_label_norm in field_text or field_label_norm in entry_label_norm:
+                priority = 3
+            elif _token_overlap(entry_label_norm, field_text) >= 0.70:
+                priority = 3
+        elif (
+            intent
+            and intent != "unknown"
+            and entry_intent == intent
+            and same_domain
+            and confidence >= LEARNED_DOMAIN_INTENT_THRESHOLD
+        ):
+            priority = 2
+        elif (
+            intent
+            and intent != "unknown"
+            and entry_intent == intent
+            and global_domain
+            and confidence >= LEARNED_GLOBAL_INTENT_THRESHOLD
+        ):
+            priority = 1
+
+        if priority:
+            candidates.append({"entry": entry, "priority": priority})
+
     if not candidates:
         return None
 
     candidates.sort(
         key=lambda item: (
-            1 if item.get("domain") == domain else 0,
-            item.get("confidence", 0),
-            item.get("usage_count", 0),
-            -item.get("correction_count", 0),
+            item["priority"],
+            item["entry"].get("confidence", 0),
+            item["entry"].get("usage_count", 0),
+            -item["entry"].get("correction_count", 0),
+        ),
+        reverse=True,
+    )
+    best = candidates[0]["entry"]
+    base_confidence = min(
+        int(best.get("confidence", 0)) + (8 if candidates[0]["priority"] >= 4 else 0),
+        93,
+    )
+    return _resolve_option_suggestion(
+        field,
+        best.get("value"),
+        source="learned",
+        base_confidence=base_confidence,
+        reason=f"learned mapping reused from {best.get('domain') or 'local profile'}",
+        detected_intent=intent,
+    )
+
+
+def resolve_form_qa_value(field: Dict[str, Any], normalized_context: Dict[str, Any]) -> FieldSuggestion | None:
+    profile_data = _get_profile_data(normalized_context)
+    domain = normalized_context["page"].get("domain")
+    field_text = _field_text(field)
+    field_text_norm = _norm(field_text)
+    field_label_norm = _norm(field.get("label"))
+    field_name_norm = _norm(field.get("field_name"))
+    field_id_norm = _norm(field.get("field_id"))
+    intent = field.get("intent")
+    candidates = []
+
+    if not field_text_norm:
+        return None
+
+    for item in _profile_form_qa_items(profile_data):
+        item_domain = item.get("domain")
+        if item_domain and item_domain not in {domain, "__global__"}:
+            continue
+
+        question_norm = _norm(item.get("question"))
+        if not question_norm:
+            continue
+
+        item_intent = item.get("intent")
+        item_field_id = _norm(item.get("field_id"))
+        item_field_name = _norm(item.get("field_name"))
+        score = 0
+
+        if item_field_id and item_field_id == field_id_norm:
+            score = 100
+        elif item_field_name and item_field_name == field_name_norm:
+            score = 94
+        elif question_norm == field_label_norm:
+            score = 92
+        elif question_norm in field_text_norm or (field_label_norm and field_label_norm in question_norm):
+            score = 82
+        else:
+            overlap = _token_overlap(question_norm, field_text_norm)
+            if overlap >= 0.72:
+                score = int(round(overlap * 86))
+            else:
+                sim = _similarity(question_norm, field_text_norm)
+                if sim >= 0.84:
+                    score = int(round(sim * 82))
+
+        if item_intent and intent and intent != "unknown" and item_intent == intent:
+            score += 8
+        if item_domain == domain:
+            score += 5
+
+        if score >= 72:
+            candidates.append({"item": item, "score": min(score, 100)})
+
+    if not candidates:
+        return None
+
+    candidates.sort(
+        key=lambda candidate: (
+            candidate["score"],
+            candidate["item"].get("confidence", 0),
         ),
         reverse=True,
     )
     best = candidates[0]
     return _resolve_option_suggestion(
         field,
-        best.get("value"),
-        source="learned",
-        base_confidence=min(int(best.get("confidence", 0)), 93),
-        reason="learned mapping reused",
+        best["item"].get("answer"),
+        source="profile",
+        base_confidence=min(best["item"].get("confidence", 82), best["score"]),
+        reason=f"profile qa matched: {best['item'].get('question')}",
         detected_intent=intent,
     )
 
@@ -1108,6 +1394,7 @@ async def analyze_form_request(
     merged_profile = _deep_merge_profiles(get_user_data(), normalized_context["profile"].get("data") or {})
     normalized_context["profile"]["merged_data"] = merged_profile
     normalized_context["profile"]["merged_flat_data"] = flatten_profile_data(merged_profile)
+    _merge_local_learned_entries(normalized_context, merged_profile)
     profile_data = merged_profile
     suggestions: List[FieldSuggestion] = []
     debug_fields: List[Dict[str, Any]] = []
@@ -1140,6 +1427,13 @@ async def analyze_form_request(
         if direct and direct.status != "failed":
             suggestions.append(direct)
             debug_entry["decision_path"].append("learned_cache")
+            debug_fields.append(debug_entry)
+            continue
+
+        direct = resolve_form_qa_value(field, normalized_context)
+        if direct and direct.status != "failed":
+            suggestions.append(direct)
+            debug_entry["decision_path"].append("profile_qa")
             debug_fields.append(debug_entry)
             continue
 

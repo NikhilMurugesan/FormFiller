@@ -63,18 +63,47 @@ class UserActionContext(ContractModel):
 
 
 class LearnedEntry(ContractModel):
+    id: Optional[str] = None
     domain: Optional[str] = None
     page_type: Optional[str] = None
     field_label: Optional[str] = None
     field_type: Optional[str] = None
     field_name: Optional[str] = None
     field_id: Optional[str] = None
+    placeholder: Optional[str] = None
     field_intent: Optional[str] = None
     value: Any = None
     confidence: int = 0
     value_source: Optional[str] = None
     usage_count: int = 0
     correction_count: int = 0
+    created_at: Optional[str] = None
+    last_used_at: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_extension_export_keys(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+
+        key_map = {
+            "pageType": "page_type",
+            "fieldLabel": "field_label",
+            "fieldType": "field_type",
+            "fieldName": "field_name",
+            "fieldId": "field_id",
+            "fieldIntent": "field_intent",
+            "valueSource": "value_source",
+            "usageCount": "usage_count",
+            "correctionCount": "correction_count",
+            "createdAt": "created_at",
+            "lastUsedAt": "last_used_at",
+        }
+        upgraded = dict(value)
+        for source, target in key_map.items():
+            if source in upgraded and target not in upgraded:
+                upgraded[target] = upgraded[source]
+        return upgraded
 
 
 class LearnedContext(ContractModel):

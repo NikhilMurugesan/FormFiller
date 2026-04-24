@@ -19,6 +19,7 @@ INTENT_PATTERNS = [
     ("city", [r"\bcity\b", r"town", r"municipality"]),
     ("state", [r"\bstate\b", r"province", r"region"]),
     ("zip", [r"zip", r"postal", r"postcode", r"pincode"]),
+    ("country_code", [r"country.?code", r"dial.?code", r"phone.?country.?code"]),
     ("country", [r"\bcountry\b", r"nationality"]),
     ("current_company", [r"company", r"employer", r"organization"]),
     ("current_title", [r"job.?title", r"position", r"designation", r"\brole\b"]),
@@ -29,6 +30,8 @@ INTENT_PATTERNS = [
     ("education_level", [r"degree", r"education", r"qualification"]),
     ("experience_years", [r"years?.?of.?exp", r"\byoe\b", r"experience"]),
     ("employment_type", [r"employment.?type", r"full.?time", r"part.?time", r"contract", r"intern(ship)?"]),
+    ("start_date", [r"start.?date", r"avail.?date", r"join.?date", r"earliest.?start", r"when.?can.?you.?start"]),
+    ("notice_period", [r"notice.?period", r"notice.?time", r"days.?notice", r"current.?notice"]),
     ("work_authorization", [r"authorized?.?to.?work", r"work.?author", r"right.?to.?work"]),
     ("sponsorship", [r"sponsor", r"h-?1b", r"visa"]),
     ("relocation", [r"relocat"]),
@@ -37,6 +40,16 @@ INTENT_PATTERNS = [
     ("summary", [r"summary", r"about", r"cover.?letter", r"why.?join"]),
     ("skills", [r"skills", r"expertise", r"competenc"]),
     ("gender", [r"gender", r"pronouns"]),
+    ("ethnicity", [r"ethnic", r"\brace\b", r"racial", r"heritage", r"demographic"]),
+    ("veteran_status", [r"veteran", r"military", r"armed.?force", r"service.?member"]),
+    ("disability_status", [r"disab", r"handicap", r"accommodat", r"special.?need"]),
+    ("newsletter", [r"newsletter", r"subscri", r"mailing.?list", r"marketing.?email", r"promotional"]),
+    ("phone_type", [r"phone.?type", r"mobile.?type", r"device.?type"]),
+    ("language", [r"language", r"fluent", r"speak", r"known.?language"]),
+    ("hear_about", [r"hear.?about", r"referral.?source", r"where.?did.?you.?hear", r"how.?did.?you.?find"]),
+    ("shift_preference", [r"shift", r"night.?shift", r"day.?shift"]),
+    ("travel_willingness", [r"travel", r"business.?travel"]),
+    ("same_as_above", [r"same.?as", r"use.?above", r"same.?address"]),
     ("dob", [r"date.?of.?birth", r"\bdob\b", r"birth"]),
 ]
 
@@ -50,6 +63,7 @@ PROFILE_ALIASES = {
     "city": ["city"],
     "state": ["state"],
     "zip": ["zip", "postal_code"],
+    "country_code": ["country_code", "phone_country_code", "dialing_code"],
     "country": ["country"],
     "current_company": ["current_company", "company"],
     "current_title": ["current_title", "job_title", "title"],
@@ -60,6 +74,8 @@ PROFILE_ALIASES = {
     "education_level": ["highest_degree"],
     "experience_years": ["years_of_experience"],
     "employment_type": ["employment_type_preference", "preferred_employment_type"],
+    "start_date": ["start_date", "available_start_date", "joining_date"],
+    "notice_period": ["notice_period"],
     "work_authorization": ["work_authorization", "authorized_to_work"],
     "sponsorship": ["sponsorship_required", "requires_sponsorship"],
     "relocation": ["willing_to_relocate", "relocation"],
@@ -67,7 +83,17 @@ PROFILE_ALIASES = {
     "summary": ["summary"],
     "skills": ["skills"],
     "gender": ["gender"],
-    "dob": ["dob"],
+    "ethnicity": ["ethnicity"],
+    "veteran_status": ["veteran_status", "armed_forces_service"],
+    "disability_status": ["disability_status"],
+    "newsletter": ["newsletter"],
+    "phone_type": ["phone_type"],
+    "language": ["language", "languages_known"],
+    "hear_about": ["hear_about", "referral_source"],
+    "shift_preference": ["shift_preference"],
+    "travel_willingness": ["travel_willingness"],
+    "same_as_above": ["same_as_above"],
+    "dob": ["dob", "date_of_birth"],
 }
 
 
@@ -260,4 +286,13 @@ def profile_value_for_intent(profile_data: Dict[str, Any], intent: str) -> Any:
     for key in aliases:
         if key in profile_data and profile_data[key] not in (None, "", [], {}):
             return profile_data[key]
+    flat_profile = flatten_profile_data(profile_data)
+    for key in aliases:
+        if key in flat_profile and flat_profile[key] not in (None, "", [], {}):
+            return flat_profile[key]
+    for alias in aliases:
+        suffix = f".{alias}"
+        for key, value in flat_profile.items():
+            if key.endswith(suffix) and value not in (None, "", [], {}):
+                return value
     return None
