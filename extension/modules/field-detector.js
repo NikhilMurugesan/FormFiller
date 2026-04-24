@@ -17,7 +17,7 @@
 var FieldDetector = FieldDetector || (() => {
 
   let _idCounter = 0;
-  const TEXT_LIMIT = 180;
+  const TEXT_LIMIT = 800;
 
   // ─── Visibility Check ────────────────────────────────────────
   function isVisible(el) {
@@ -177,7 +177,7 @@ var FieldDetector = FieldDetector || (() => {
 
     const heading = container.querySelector('legend, h1, h2, h3, h4, h5, h6, .heading, .section-title, .question-title, [role="heading"]');
     const helpText = container.querySelector('.help-text, .description, .hint, small, .form-text, .helper-text');
-    const parentSectionText = cleanText(container.innerText || '', 320);
+    const parentSectionText = cleanText(container.innerText || '', 1400);
 
     return {
       sectionHeading: cleanText(heading?.innerText || null),

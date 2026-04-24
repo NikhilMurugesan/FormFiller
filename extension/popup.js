@@ -25,6 +25,7 @@ let currentPagePromptSource = null;
 const AI_REVIEW_CONFIDENCE_THRESHOLD = 88;
 const AI_MATCH_CONFIDENCE_THRESHOLD = 80;
 const AI_UNCERTAIN_CONFIDENCE_THRESHOLD = 55;
+const OPEN_ENDED_FIELD_RE = /\b(describe|explain|tell\s+us|tell\s+me|share|provide\s+details|why|how|what|summary|background|experience|project|achievement|motivation|cover\s+letter|statement|additional\s+information)\b/i;
 
 function compactText(value, maxLen = 220) {
   if (value === null || value === undefined) return null;
@@ -63,8 +64,35 @@ function normalizeSourceForUi(source) {
 function shouldSendFieldToBackend(mapping) {
   if (!mapping) return false;
   if (mapping.status === 'blocked' || mapping.fieldType === 'password') return false;
+  if (isOpenEndedQuestionMapping(mapping)) return true;
   if (mapping.status === 'unmatched' || mapping.status === 'matched_no_value') return true;
   return (mapping.confidence || 0) < AI_REVIEW_CONFIDENCE_THRESHOLD;
+}
+
+function isOpenEndedQuestionMapping(mapping) {
+  const field = mapping.field || {};
+  const fieldType = String(mapping.fieldType || field.fieldType || field.type || '').toLowerCase();
+  const inputTag = String(mapping.inputTag || field.inputTag || field.tagName || '').toLowerCase();
+  const options = mapping.options || field.candidateOptions || field.options || [];
+  if (options.length > 0 || ['select', 'radio', 'checkbox'].includes(fieldType) || ['select', 'radio', 'checkbox'].includes(inputTag)) {
+    return false;
+  }
+
+  const text = [
+    mapping.fieldLabel,
+    field.label,
+    field.placeholder,
+    field.ariaLabel,
+    field.nearbyText,
+    field.parentSectionText,
+    field.sectionHeading,
+  ].filter(Boolean).join(' ');
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+
+  return inputTag === 'textarea'
+    || fieldType === 'textarea'
+    || (normalized.length >= 90 && OPEN_ENDED_FIELD_RE.test(normalized));
 }
 
 function hasDisplayValue(value) {
@@ -588,6 +616,7 @@ async function handleAIAutofillV2() {
 
     const aiTargets = scanResponse.mappings.filter(shouldSendFieldToBackend);
     if (aiTargets.length > 0) {
+      setStatus(`Sending ${aiTargets.length} field${aiTargets.length === 1 ? '' : 's'} to backend AI...`, 'loading');
       const analyzeRequest = buildAnalyzeRequest(
         scanResponse,
         aiTargets,
@@ -609,6 +638,8 @@ async function handleAIAutofillV2() {
       }
 
       applyAnalyzeResponseToMappings(scanResponse, aiResponse);
+    } else {
+      setStatus('No fields needed backend AI; applying local suggestions...', 'loading');
     }
 
     currentScanResults = scanResponse;

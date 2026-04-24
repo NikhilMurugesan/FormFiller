@@ -50,6 +50,14 @@ RETRYABLE_LLM_STATUS_RE = re.compile(r"\b(429|500|502|503|504)\b")
 MATCHABLE_TAGS = {"select", "radio", "checkbox"}
 OPTION_PLACEHOLDER_RE = re.compile(r"^(?:--+\s*)?(select|choose|pick|option|please select|please choose)\b", re.I)
 WORD_RE = re.compile(r"[a-z0-9]+")
+OPEN_ENDED_FIELD_RE = re.compile(
+    r"\b("
+    r"describe|explain|tell\s+(?:us|me)|share|provide\s+details|why|how|what|"
+    r"summary|background|experience|project|achievement|motivation|cover\s+letter|"
+    r"statement|additional\s+information"
+    r")\b",
+    re.I,
+)
 
 STATE_ABBREVIATIONS = {
     "andhra pradesh": "AP", "arunachal pradesh": "AR", "assam": "AS", "bihar": "BR", "chhattisgarh": "CG",
@@ -346,6 +354,24 @@ def _is_option_field(field: Dict[str, Any]) -> bool:
     field_type = (field.get("field_type") or "").lower()
     input_tag = (field.get("input_tag") or "").lower()
     return field_type in MATCHABLE_TAGS or input_tag in MATCHABLE_TAGS
+
+
+def _is_open_ended_answer_field(field: Dict[str, Any]) -> bool:
+    if _is_option_field(field):
+        return False
+
+    field_type = (field.get("field_type") or "").lower()
+    input_tag = (field.get("input_tag") or "").lower()
+    field_text = _field_text(field)
+    normalized = " ".join(field_text.split())
+    if not normalized:
+        return False
+
+    return (
+        field_type == "textarea"
+        or input_tag == "textarea"
+        or (len(normalized) >= 90 and bool(OPEN_ENDED_FIELD_RE.search(normalized)))
+    )
 
 
 def _valid_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1413,6 +1439,13 @@ async def analyze_form_request(
         if direct:
             suggestions.append(direct)
             debug_entry["decision_path"].append("sensitive_skip")
+            debug_fields.append(debug_entry)
+            continue
+
+        if _is_open_ended_answer_field(field):
+            field["answer_mode"] = "profile_grounded_answer"
+            llm_fields.append(field)
+            debug_entry["decision_path"].append("open_ended_profile_llm")
             debug_fields.append(debug_entry)
             continue
 

@@ -71,7 +71,7 @@ if (typeof window._ffProInitialized === 'undefined') {
       currentValue: field.currentValue,
       candidateOptions: field.candidateOptions || field.options || [],
       nearbyText: compactText(field.nearbyText || field.surroundingText),
-      parentSectionText: compactText(field.parentSectionText, 320),
+      parentSectionText: compactText(field.parentSectionText, 1400),
       sectionHeading: compactText(field.sectionHeading),
       autocomplete: field.autocomplete,
       required: !!field.required,

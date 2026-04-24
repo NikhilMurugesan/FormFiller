@@ -8,7 +8,7 @@ The extension already tried deterministic local matching first. Your job is to m
 
 Use the field label, placeholder, nearby text, section heading, options, page/form context, learned hints, profile QA answers, profile/autofill/form preference data, and resume snippets.
 Rules:
-1. Never invent values absent from profile, learned hints, profile QA, form preferences, or resume context.
+1. Never invent facts absent from profile, learned hints, profile QA, form preferences, or resume context.
 2. Skip sensitive fields such as passwords, SSN, credit card, OTP, CVV.
 3. For select/radio/checkbox fields, suggested_value must exactly match one option text or option value.
 4. Prefer exact learned hints and profile QA when the field label/question matches the current field.
@@ -16,9 +16,12 @@ Rules:
 6. You may combine profile values only when all components are present, such as first_name + last_name for full_name.
 7. Treat low-confidence learned hints as context, not as automatic truth.
 8. If a field asks for a yes/no answer, use an explicit learned/profile/profile-QA answer; do not infer from unrelated text.
-9. status must be one of matched, uncertain, failed, skipped.
-10. confidence is 0-100.
-11. source must be one of rag, learned, profile, deterministic, failed.
+9. For fields with answer_mode "profile_grounded_answer", read the full question and write a direct, paste-ready answer using only the provided profile, QA, learned hints, form preferences, and resume context. Synthesis is allowed when it combines provided facts; fabrication is not.
+10. Open-ended answer fields should usually be first person, concise, and specific. Use 2-5 sentences unless the question asks for a number, a short answer, or a different format.
+11. If the available data is insufficient for an open-ended answer, return status "uncertain" with the best grounded answer, or "failed" with null when there is no grounded answer.
+12. status must be one of matched, uncertain, failed, skipped.
+13. confidence is 0-100.
+14. source must be one of rag, learned, profile, deterministic, failed.
 
 Respond only as JSON:
 {"suggestions":[{"field_id":"...","detected_intent":"...","suggested_value":"...","source":"rag","confidence":84,"reason":"short reason","status":"matched","candidate_alternatives":["..."]}]}"""
@@ -59,6 +62,16 @@ def _trim_value(value: Any, max_len: int = 220) -> Any:
     return value
 
 
+def _trim_profile_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:700]
+    if isinstance(value, list):
+        return [_trim_profile_value(item) for item in value[:8]]
+    if isinstance(value, dict):
+        return {key: _trim_profile_value(item) for key, item in list(value.items())[:60]}
+    return value
+
+
 WORD_RE = re.compile(r"[a-z0-9]+")
 
 
@@ -95,7 +108,7 @@ def _field_text(field: Dict[str, Any]) -> str:
 
 def _profile_for_prompt(profile_data: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        key: value
+        key: _trim_profile_value(value)
         for key, value in (profile_data or {}).items()
         if key != "learned_memory"
     }
@@ -210,7 +223,7 @@ def build_user_message(
     payload = {
         "page": normalized_context["page"],
         "form": normalized_context["form"],
-        "profile": _trim_value(_profile_for_prompt(profile_data), 180),
+        "profile": _profile_for_prompt(profile_data),
         "fields": [],
     }
 
@@ -225,6 +238,7 @@ def build_user_message(
                 "field_type": field.get("field_type"),
                 "input_tag": field.get("input_tag"),
                 "detected_intent": field.get("intent"),
+                "answer_mode": field.get("answer_mode"),
                 "query": field.get("query"),
                 "nearby_text": field.get("nearby_text"),
                 "section_heading": field.get("section_heading"),
