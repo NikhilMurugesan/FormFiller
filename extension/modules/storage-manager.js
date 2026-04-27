@@ -43,8 +43,9 @@ var StorageManager = (() => {
     remote_preference: '', preferred_locations: '',
     veteran_status: '', armed_forces_service: '', disability_status: '',
     languages_known: '', phone_type: '', hear_about: '',
-    shift_preference: '', travel_willingness: '', salary_expectation: '',
-    notice_period: '', start_date: '',
+    shift_preference: '', travel_willingness: '',
+    current_ctc: '', current_salary: '', expected_ctc: '', expected_salary: '', salary_expectation: '',
+    notice_period: '', notice_period_days: '', notice_period_months: '', start_date: '',
     gender: '', dob: '', date_of_birth: '',
   };
 

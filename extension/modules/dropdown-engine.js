@@ -578,6 +578,10 @@ var DropdownEngine = DropdownEngine || (() => {
       education_level:  'highest_degree',
       experience_years: 'years_of_experience',
       gender:           'gender',
+      notice_period:    'notice_period',
+      current_ctc:      'current_ctc',
+      expected_ctc:     'expected_ctc',
+      salary_expectation: 'salary_expectation',
     };
 
     if (intentToProfileKey[intent]) return intentToProfileKey[intent];
